@@ -3,6 +3,8 @@ import Onboarding from './components/Onboarding';
 import Dashboard from './components/Dashboard';
 import { AppState, UserProfile } from './types';
 
+// Developed by Yash Kant Tiwary (PW26173)
+
 const STORAGE_KEY = 'pw_compliance_app_state';
 
 const App: React.FC = () => {

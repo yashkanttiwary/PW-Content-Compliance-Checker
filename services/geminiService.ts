@@ -2,6 +2,8 @@ import { GoogleGenAI } from "@google/genai";
 import { SYSTEM_PROMPT } from "../constants";
 import { AnalysisResult, Issue, Severity } from "../types";
 
+// Developed by Yash Kant Tiwary (PW26173)
+
 export class GeminiService {
   private ai: GoogleGenAI | null = null;
 

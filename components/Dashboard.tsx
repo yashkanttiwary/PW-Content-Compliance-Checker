@@ -2,12 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, RotateCcw, FileText, Upload, Copy, Download, 
   ChevronDown, ChevronRight, X, Check, AlertTriangle, Info,
-  History, Settings as SettingsIcon, HelpCircle, Loader
+  History, Settings as SettingsIcon, HelpCircle, Loader, FileType
 } from 'lucide-react';
 import { AppState, ContentType, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
 import AnalysisPanel from './AnalysisPanel';
 import { CONTENT_TYPE_OPTIONS, SEVERITY_COLORS } from '../constants';
+import { jsPDF } from 'jspdf';
+
+// Developed by Yash Kant Tiwary (PW26173)
 
 interface DashboardProps {
   appState: AppState;
@@ -22,6 +25,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
   const [activeIssueId, setActiveIssueId] = useState<string | undefined>(undefined);
   const [geminiService] = useState(() => new GeminiService(appState.apiKey || ''));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
   const handleAnalyze = async () => {
     if (!content.trim()) return;
@@ -114,6 +118,54 @@ Guideline: ${i.guidelineRef}
       navigator.clipboard.writeText(result.cleanContent);
       alert("Clean content copied to clipboard!");
     }
+  };
+  
+  const handleCopyCurrent = () => {
+    navigator.clipboard.writeText(content);
+    // Optional: could add a toast here
+    const btn = document.getElementById('copy-current-btn');
+    if (btn) {
+      const original = btn.innerHTML;
+      btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check"><path d="M20 6 9 17l-5-5"/></svg>';
+      setTimeout(() => btn.innerHTML = original, 1000);
+    }
+  };
+
+  const handleDownloadDoc = () => {
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'></head><body><pre style='font-family: monospace; font-size: 11pt; white-space: pre-wrap;'>";
+    const footer = "</pre></body></html>";
+    const sourceHTML = header + content + footer;
+    
+    const blob = new Blob(['\ufeff', sourceHTML], {
+        type: 'application/msword'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pw-content-${Date.now()}.doc`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setShowDownloadMenu(false);
+  };
+
+  const handleDownloadPDF = () => {
+    const doc = new jsPDF();
+    const splitText = doc.splitTextToSize(content, 180);
+    doc.text(splitText, 10, 10);
+    doc.save(`pw-content-${Date.now()}.pdf`);
+    setShowDownloadMenu(false);
+  };
+
+  // Helper for stats
+  const wordCount = content.trim() === '' ? 0 : content.trim().split(/\s+/).length;
+  
+  const getReadingTime = () => {
+    const wordsPerMinute = 150; // Average speaking pace
+    const minutes = wordCount / wordsPerMinute;
+    const wholeMinutes = Math.floor(minutes);
+    const seconds = Math.round((minutes - wholeMinutes) * 60);
+    return `${wholeMinutes}m ${seconds}s`;
   };
 
   return (
@@ -210,9 +262,22 @@ Guideline: ${i.guidelineRef}
                 </>
               )}
             </button>
-            <div className="mt-2 text-center text-xs text-pw-muted">
-              {content.length} characters • {content.split(/\s+/).filter(w => w).length} words
+            <div className="mt-2 text-center text-xs text-pw-muted flex justify-center items-center flex-wrap gap-1">
+              <span>{content.length} characters • {wordCount} words</span>
+              {contentType === ContentType.VIDEO_SCRIPT && wordCount > 0 && (
+                <>
+                  <span className="mx-1 hidden sm:inline">•</span>
+                  <span className="text-pw-blue font-medium whitespace-nowrap" title="Estimated based on 150 words per minute">
+                    ~{getReadingTime()} duration
+                  </span>
+                </>
+              )}
             </div>
+          </div>
+          
+          {/* Visible Watermark in Input Column Footer */}
+          <div className="p-2 border-t border-pw-border bg-white text-[10px] text-gray-300 text-center font-mono select-none">
+            PW26173 - Yash Kant Tiwary
           </div>
         </div>
 
@@ -220,10 +285,59 @@ Guideline: ${i.guidelineRef}
         <div className="flex-[1.5] flex flex-col min-w-[320px] bg-pw-bg overflow-hidden relative">
           <div className="p-3 border-b border-pw-border flex justify-between items-center bg-white shadow-sm z-10">
             <h2 className="text-sm font-semibold text-pw-text">Analyzed Content</h2>
-            <div className="flex gap-4 text-xs">
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Critical</div>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Warning</div>
-              <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-500"></span> Tip</div>
+            
+            <div className="flex items-center gap-3">
+              <div className="hidden xl:flex gap-3 text-xs pr-3 border-r border-gray-200">
+                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Critical</div>
+                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Warning</div>
+                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-500"></span> Tip</div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button 
+                  id="copy-current-btn"
+                  onClick={handleCopyCurrent} 
+                  disabled={!content}
+                  className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
+                  title="Copy Current Content"
+                >
+                  <Copy size={16} />
+                </button>
+                
+                <div className="relative">
+                  <button 
+                    onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+                    disabled={!content}
+                    className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
+                    title="Download"
+                  >
+                    <Download size={16} />
+                  </button>
+                  
+                  {showDownloadMenu && (
+                    <>
+                      <div 
+                        className="fixed inset-0 z-40" 
+                        onClick={() => setShowDownloadMenu(false)}
+                      ></div>
+                      <div className="absolute right-0 top-full mt-1 bg-white border border-pw-border rounded shadow-lg z-50 w-36 py-1">
+                         <button 
+                           onClick={handleDownloadDoc}
+                           className="w-full text-left px-3 py-2 text-sm text-pw-text hover:bg-gray-50 flex items-center gap-2"
+                         >
+                           <FileText size={14} className="text-blue-600" /> Word Doc
+                         </button>
+                         <button 
+                           onClick={handleDownloadPDF}
+                           className="w-full text-left px-3 py-2 text-sm text-pw-text hover:bg-gray-50 flex items-center gap-2"
+                         >
+                           <FileType size={14} className="text-red-600" /> PDF
+                         </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
           

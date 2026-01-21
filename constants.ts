@@ -52,6 +52,9 @@ GUIDELINES:
 8. Third-Party IP (WARNING): Flag competitor names or brand names.
 9. Controversial Content (WARNING): Flag commentary on rumors, market news, or defensive statements.
 
+NOTE FOR SHORT FORM CONTENT (Push Notifications, SMS, In-App): 
+Be extra vigilant about "false urgency" (Guideline 7) and "success claims" (Guideline 4) as these are common in short copy.
+
 JSON RESPONSE FORMAT:
 {
   "issues": [

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, Check, ArrowRight, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Check, ArrowRight, Loader2, HelpCircle, ExternalLink } from 'lucide-react';
 import { ContentType, UserProfile } from '../types';
 import { GeminiService } from '../services/geminiService';
 import { CONTENT_TYPE_OPTIONS } from '../constants';
+
+// Developed by Yash Kant Tiwary (PW26173)
 
 interface OnboardingProps {
   onComplete: (apiKey: string, profile: UserProfile) => void;
@@ -12,6 +14,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   const [step, setStep] = useState(1);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [isValid, setIsValid] = useState<boolean | null>(null);
   const [profile, setProfile] = useState<UserProfile>({
@@ -37,11 +40,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white p-4">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white p-4 relative">
       <div className="bg-white w-full max-w-lg rounded-2xl shadow-xl overflow-hidden border border-pw-border">
         {/* Header */}
         <div className="bg-pw-blue p-8 text-center text-white">
-          <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">
+          <div className="w-12 h-12 bg-black rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">
             PW
           </div>
           <h1 className="text-2xl font-bold mb-2">Content Compliance Checker</h1>
@@ -79,9 +82,36 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     {showKey ? <EyeOff size={18} /> : <Eye size={18} />}
                   </button>
                 </div>
-                <p className="mt-2 text-xs text-pw-muted">
-                  Get your key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-pw-blue hover:underline">Google AI Studio</a>. Keys are stored locally.
-                </p>
+                
+                <div className="flex justify-between items-center mt-3">
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    className="text-xs text-pw-blue flex items-center gap-1 hover:underline font-medium focus:outline-none transition-colors"
+                  >
+                    Get Key from Google AI Studio <ExternalLink size={12} />
+                  </a>
+                  <button 
+                    onClick={() => setShowHelp(!showHelp)}
+                    className="text-xs text-pw-blue flex items-center gap-1 hover:underline font-medium focus:outline-none transition-colors"
+                  >
+                    <HelpCircle size={12} />
+                    {showHelp ? 'Hide help' : 'Need help?'}
+                  </button>
+                </div>
+
+                {showHelp && (
+                  <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-100 text-xs text-pw-text">
+                    <h4 className="font-semibold text-pw-blue mb-2">How to get a free API Key:</h4>
+                    <ol className="list-decimal pl-4 space-y-1.5">
+                      <li>Log in to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-pw-blue hover:underline inline-flex items-center">Google AI Studio <ExternalLink size={10} className="ml-0.5" /></a> with your Google account.</li>
+                      <li>Click on the blue <strong>"Create API key"</strong> button.</li>
+                      <li>Select <strong>"Create API key in new project"</strong>.</li>
+                      <li>Copy the key string (starts with <code>AIza</code>) and paste it here.</li>
+                    </ol>
+                  </div>
+                )}
               </div>
 
               {isValid === true && (
@@ -136,7 +166,10 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-pw-text mb-2">Default Content Type</label>
+                <label className="block text-sm font-medium text-pw-text mb-2">
+                  Default Content Type 
+                  <span className="text-pw-muted font-normal text-xs ml-2">(this can be changed later)</span>
+                </label>
                 <select
                   value={profile.defaultContentType}
                   onChange={(e) => setProfile({ ...profile, defaultContentType: e.target.value as ContentType })}
@@ -174,6 +207,11 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
              style={{ width: step === 1 ? '50%' : '100%' }}
            />
         </div>
+      </div>
+
+      {/* Watermark */}
+      <div className="fixed bottom-4 right-4 text-[10px] text-gray-400 opacity-50 font-mono pointer-events-none select-none">
+        Made by Yash Kant Tiwary Employee Code: PW26173
       </div>
     </div>
   );

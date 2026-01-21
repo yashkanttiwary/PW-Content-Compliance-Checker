@@ -1,3 +1,5 @@
+// Developed by Yash Kant Tiwary (PW26173)
+
 export enum Severity {
   CRITICAL = 'CRITICAL',
   WARNING = 'WARNING',
@@ -12,6 +14,10 @@ export enum ContentType {
   EMAIL_CAMPAIGN = 'Email/SMS Campaign',
   PRESS_RELEASE = 'Press Release',
   AD_COPY = 'Advertisement Copy',
+  DRIP = 'Drip',
+  IN_APP = 'In-app',
+  CLM = 'CLM',
+  PUSH_NOTIFICATION = 'Push Notification',
   OTHER = 'Other'
 }
 
