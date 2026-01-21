@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useRef } from 'react';
 import { Issue } from '../types';
 import { SEVERITY_COLORS } from '../constants';
 import { AlertCircle } from 'lucide-react';
@@ -11,41 +11,49 @@ interface AnalysisPanelProps {
 }
 
 const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueClick, activeIssueId }) => {
-  // Memoize the text segments construction to avoid unnecessary recalculations
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to active issue
+  useEffect(() => {
+    if (activeIssueId && containerRef.current) {
+      const element = containerRef.current.querySelector(`[data-issue-id="${activeIssueId}"]`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }, [activeIssueId]);
+
+  // Memoize the text segments construction
   const segments = useMemo(() => {
     if (!issues.length) return [{ text: content, issue: null }];
 
+    // Filter valid issues and sort by position
     const sortedIssues = [...issues]
-      .filter(i => i.status !== 'fixed')
-      .sort((a, b) => {
-        // We need to find the index of the phrase in the text
-        const indexA = content.indexOf(a.originalText);
-        const indexB = content.indexOf(b.originalText);
-        return indexA - indexB;
-      });
+      .filter(i => i.status !== 'fixed' && typeof i.startIndex === 'number')
+      .sort((a, b) => (a.startIndex || 0) - (b.startIndex || 0));
 
     const result: { text: string; issue: Issue | null }[] = [];
     let lastIndex = 0;
 
     sortedIssues.forEach(issue => {
-      // Find ALL occurrences or just the first valid one after lastIndex? 
-      // Simplified: Find first occurrence after lastIndex
-      const index = content.indexOf(issue.originalText, lastIndex);
+      const start = issue.startIndex!;
+      const end = issue.endIndex!;
       
-      if (index !== -1) {
-        // Text before issue
-        if (index > lastIndex) {
-          result.push({ text: content.substring(lastIndex, index), issue: null });
-        }
-        // Issue text
-        result.push({ text: content.substring(index, index + issue.originalText.length), issue });
-        lastIndex = index + issue.originalText.length;
+      // If overlap or out of order (shouldn't happen with sort), skip safe
+      if (start < lastIndex) return;
+
+      // Text before issue
+      if (start > lastIndex) {
+        result.push({ text: content.slice(lastIndex, start), issue: null });
       }
+      // Issue text
+      result.push({ text: content.slice(start, end), issue });
+      lastIndex = end;
     });
 
     // Remaining text
     if (lastIndex < content.length) {
-      result.push({ text: content.substring(lastIndex), issue: null });
+      result.push({ text: content.slice(lastIndex), issue: null });
     }
 
     return result;
@@ -73,7 +81,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
       </div>
 
       {/* Content */}
-      <div className="flex-1 p-4 whitespace-pre-wrap min-h-full">
+      <div className="flex-1 p-4 whitespace-pre-wrap min-h-full" ref={containerRef}>
         {segments.map((segment, idx) => {
           if (!segment.issue) return <span key={idx}>{segment.text}</span>;
 
@@ -84,6 +92,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
           return (
             <span
               key={idx}
+              data-issue-id={segment.issue.id}
               onClick={() => segment.issue && onIssueClick(segment.issue)}
               className={`
                 cursor-pointer transition-all duration-200 rounded px-0.5

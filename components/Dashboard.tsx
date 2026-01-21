@@ -3,7 +3,7 @@ import {
   Play, FileText, Upload, Copy, Download, 
   ChevronDown, X, Check, Info,
   History, Settings as SettingsIcon, HelpCircle, Loader, FileType,
-  Trash2, RotateCcw, Shield, User, LogOut, ExternalLink
+  Trash2, RotateCcw, Shield, User, LogOut, ExternalLink, AlertTriangle
 } from 'lucide-react';
 import { AppState, ContentType, HistoryItem, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
@@ -29,6 +29,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   const [geminiService] = useState(() => new GeminiService(appState.apiKey || ''));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   // New UI State
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
@@ -37,6 +38,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     if (!content.trim()) return;
     setIsAnalyzing(true);
     setResult(null);
+    setErrorMsg(null);
     setAnalyzedContent(content);
     
     try {
@@ -61,7 +63,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       onUpdateAppState({ ...appState, history: updatedHistory });
 
     } catch (error) {
-      alert("Analysis failed. Please check your connection or API key.");
+      setErrorMsg("Analysis failed. Please check your connection or API key.");
       console.error(error);
     } finally {
       setIsAnalyzing(false);
@@ -74,6 +76,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setResult(item.data);
     setContentType(item.contentType);
     setActivePanel(null);
+    setErrorMsg(null);
   };
 
   const handleDeleteHistory = (e: React.MouseEvent, id: string) => {
@@ -93,6 +96,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setAnalyzedContent('');
     setResult(null);
     setActiveIssueId(undefined);
+    setErrorMsg(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -106,19 +110,45 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   };
 
   const handleApplyFix = (issue: Issue) => {
-    const newAnalyzedContent = analyzedContent.replace(issue.originalText, issue.suggestion);
-    setAnalyzedContent(newAnalyzedContent);
+    // Find the issue in the current result state to ensure we have the latest indices
+    const currentIssue = result.issues.find((i: Issue) => i.id === issue.id);
     
-    // Also update source content to keep it in sync for future analysis
-    const newContent = content.replace(issue.originalText, issue.suggestion);
-    setContent(newContent);
+    if (!currentIssue || typeof currentIssue.startIndex !== 'number' || typeof currentIssue.endIndex !== 'number') {
+      console.error("Invalid issue indices", currentIssue);
+      return;
+    }
     
+    // Apply fix to the content
+    const prefix = analyzedContent.slice(0, currentIssue.startIndex);
+    const suffix = analyzedContent.slice(currentIssue.endIndex);
+    const newContent = prefix + currentIssue.suggestion + suffix;
+    
+    setAnalyzedContent(newContent);
+    setContent(newContent); // Sync source
+
+    // Calculate length difference to shift subsequent issues
+    const lengthDiff = currentIssue.suggestion.length - (currentIssue.endIndex - currentIssue.startIndex);
+
     if (result) {
+      const updatedIssues = result.issues.map((i: Issue) => {
+        if (i.id === issue.id) {
+          return { ...i, status: 'fixed' };
+        }
+        
+        // Shift indices for issues that occur AFTER the fixed issue
+        if (typeof i.startIndex === 'number' && i.startIndex > currentIssue.startIndex!) {
+          return {
+            ...i,
+            startIndex: i.startIndex + lengthDiff,
+            endIndex: (i.endIndex || 0) + lengthDiff
+          };
+        }
+        return i;
+      });
+
       setResult({
         ...result,
-        issues: result.issues.map((i: Issue) => 
-          i.id === issue.id ? { ...i, status: 'fixed' } : i
-        ),
+        issues: updatedIssues,
         summary: {
            ...result.summary,
            [issue.severity.toLowerCase()]: Math.max(0, result.summary[issue.severity.toLowerCase() as keyof typeof result.summary] - 1)
@@ -167,9 +197,13 @@ Guideline: ${i.guidelineRef}
   };
 
   const handleCopyClean = () => {
-    if (result?.cleanContent) {
-      navigator.clipboard.writeText(result.cleanContent);
-      alert("Clean content copied to clipboard!");
+    // If we have manipulated the content via fixes, 'analyzedContent' is the current clean version
+    // If we rely on AI's cleanContent, it might be outdated if we manually fixed things.
+    // The safest is to copy 'analyzedContent' if manual fixes were applied, or result.cleanContent if strictly AI.
+    // Given the app flow, analyzedContent is the single source of truth for the visible editor.
+    if (analyzedContent) {
+      navigator.clipboard.writeText(analyzedContent);
+      // Removed alert, using simple feedback if possible, or nothing for now
     }
   };
   
@@ -399,13 +433,21 @@ Guideline: ${i.guidelineRef}
             </div>
           </div>
           
-          <div className="flex-1 p-4 overflow-hidden relative">
-             <AnalysisPanel 
-               content={analyzedContent} 
-               issues={result?.issues || []} 
-               onIssueClick={(issue) => setActiveIssueId(issue.id)}
-               activeIssueId={activeIssueId}
-             />
+          <div className="flex-1 p-4 overflow-hidden relative flex flex-col">
+             {errorMsg && (
+               <div className="mb-4 bg-red-50 border border-red-200 text-red-800 p-3 rounded-md flex items-center gap-2 text-sm">
+                 <AlertTriangle size={16} />
+                 {errorMsg}
+               </div>
+             )}
+             <div className="flex-1 relative overflow-hidden">
+                <AnalysisPanel 
+                  content={analyzedContent} 
+                  issues={result?.issues || []} 
+                  onIssueClick={(issue) => setActiveIssueId(issue.id)}
+                  activeIssueId={activeIssueId}
+                />
+             </div>
           </div>
 
           {result && (
@@ -459,7 +501,7 @@ Guideline: ${i.guidelineRef}
                   key={issue.id}
                   id={`issue-card-${issue.id}`}
                   className={`
-                    bg-white rounded-lg border shadow-sm transition-all duration-200
+                    bg-white rounded-lg border shadow-sm transition-all duration-200 cursor-pointer
                     ${isSelected ? 'border-pw-blue ring-1 ring-pw-blue shadow-md' : 'border-pw-border hover:border-gray-300'}
                   `}
                   onClick={() => setActiveIssueId(issue.id)}
@@ -520,7 +562,7 @@ Guideline: ${i.guidelineRef}
           </div>
         </div>
 
-        {/* History Sidebar */}
+        {/* Sidebar Panels (History/Help) - Unchanged layout logic */}
         {activePanel === 'history' && (
           <div className="absolute inset-0 z-30 flex justify-end">
             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
@@ -585,7 +627,7 @@ Guideline: ${i.guidelineRef}
           </div>
         )}
 
-        {/* Help Sidebar */}
+        {/* Help Panel - Unchanged */}
         {activePanel === 'help' && (
           <div className="absolute inset-0 z-30 flex justify-end">
             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
@@ -622,7 +664,7 @@ Guideline: ${i.guidelineRef}
           </div>
         )}
 
-        {/* Settings Modal */}
+        {/* Settings Modal - Unchanged */}
         {activePanel === 'settings' && (
           <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setActivePanel(null)} />

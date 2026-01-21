@@ -1,11 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Onboarding from './components/Onboarding';
 import Dashboard from './components/Dashboard';
 import { AppState, UserProfile } from './types';
 
 // Developed by Yash Kant Tiwary (PW26173)
-
-const STORAGE_KEY = 'pw_compliance_app_state';
 
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>({
@@ -13,23 +11,11 @@ const App: React.FC = () => {
     profile: null,
     history: []
   });
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        setAppState(JSON.parse(stored));
-      } catch (e) {
-        console.error("Failed to load state", e);
-      }
-    }
-    setLoading(false);
-  }, []);
-
+  // State is purely in-memory to comply with strict environment constraints.
+  // No localStorage is used.
   const saveState = (newState: AppState) => {
     setAppState(newState);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newState));
   };
 
   const handleOnboardingComplete = (apiKey: string, profile: UserProfile) => {
@@ -46,8 +32,6 @@ const App: React.FC = () => {
       saveState(resetState);
     }
   };
-
-  if (loading) return null;
 
   return (
     <div className="bg-pw-bg text-pw-text h-screen w-full">

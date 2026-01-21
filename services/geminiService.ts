@@ -52,13 +52,55 @@ export class GeminiService {
     try {
       const parsed = JSON.parse(textResponse);
       
-      // Post-process to add IDs and ensure structure
-      const issues: Issue[] = (parsed.issues || []).map((issue: any, index: number) => ({
-        ...issue,
-        id: `issue-${Date.now()}-${index}`,
-        line: this.calculateLineNumber(content, issue.originalText),
-        status: 'pending'
-      }));
+      const issues: Issue[] = [];
+      const usedIndices = new Set<number>();
+      
+      // Process issues to find unique non-overlapping occurrences
+      (parsed.issues || []).forEach((issue: any, index: number) => {
+        const searchPhrase = issue.originalText;
+        if (!searchPhrase) return;
+
+        let start = -1;
+        let pos = 0;
+        
+        // Find the first occurrence that doesn't overlap with existing issues
+        while (pos < content.length) {
+            const found = content.indexOf(searchPhrase, pos);
+            if (found === -1) break;
+            
+            let collision = false;
+            // Check if any character in this range is already 'claimed'
+            for (let i = found; i < found + searchPhrase.length; i++) {
+                if (usedIndices.has(i)) {
+                    collision = true;
+                    break;
+                }
+            }
+            
+            if (!collision) {
+                start = found;
+                break;
+            }
+            // Move past this occurrence
+            pos = found + 1;
+        }
+
+        if (start !== -1) {
+            // Mark these indices as used
+            for (let i = start; i < start + searchPhrase.length; i++) {
+                usedIndices.add(i);
+            }
+            
+            issues.push({
+                ...issue,
+                id: `issue-${Date.now()}-${index}`,
+                line: this.calculateLineNumber(content, start),
+                status: 'pending',
+                startIndex: start,
+                endIndex: start + searchPhrase.length
+            });
+        }
+      });
 
       // Calculate summary
       const summary = {
@@ -81,9 +123,8 @@ export class GeminiService {
     }
   }
 
-  private calculateLineNumber(fullText: string, searchPhrase: string): number {
-    const index = fullText.indexOf(searchPhrase);
-    if (index === -1) return 1;
-    return fullText.substring(0, index).split('\n').length;
+  private calculateLineNumber(fullText: string, startIndex: number): number {
+    if (startIndex < 0 || startIndex >= fullText.length) return 1;
+    return fullText.substring(0, startIndex).split('\n').length;
   }
 }
