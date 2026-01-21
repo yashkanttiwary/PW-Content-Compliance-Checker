@@ -125,11 +125,13 @@ JSON RESPONSE FORMAT:
       "suggestion": "The EXACT replacement text ONLY. Do NOT include explanations. If removing, use empty string.",
       "guidelineRef": "Guideline Name"
     }
-  ],
-  "cleanContent": "Rewritten content with all fixes applied"
+  ]
 }
 
-IMPORTANT: The 'suggestion' field must ONLY contain the replacement text. Do NOT add context like 'Use X instead' or 'Change to Y'. JUST the new text.
+IMPORTANT: 
+1. The 'suggestion' field must ONLY contain the replacement text. Do NOT add context like 'Use X instead' or 'Change to Y'. JUST the new text.
+2. Do NOT return the full clean content. Only return the list of issues.
+3. Ensure the JSON is valid and strict.
 
 Identify ALL issues. Be strict but helpful.
 `;

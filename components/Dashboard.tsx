@@ -3,7 +3,8 @@ import {
   Play, FileText, Upload, Copy, Download, 
   ChevronDown, X, Check, Info,
   History, Settings as SettingsIcon, HelpCircle, Loader, FileType,
-  Trash2, RotateCcw, Shield, User, LogOut, ExternalLink, AlertTriangle
+  Trash2, RotateCcw, Shield, User, LogOut, ExternalLink, AlertTriangle,
+  Layout, List, Edit3
 } from 'lucide-react';
 import { AppState, ContentType, HistoryItem, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
@@ -30,20 +31,30 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusText, setStatusText] = useState<string | null>(null);
   
   // New UI State
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
+  const [mobileTab, setMobileTab] = useState<'input' | 'analysis' | 'issues'>('input');
 
   const handleAnalyze = async () => {
     if (!content.trim()) return;
     setIsAnalyzing(true);
+    setStatusText("Initializing...");
     setResult(null);
     setErrorMsg(null);
     setAnalyzedContent(content);
     
     try {
-      const data = await geminiService.analyzeContent(content, contentType);
+      const data = await geminiService.analyzeContent(
+        content, 
+        contentType,
+        (status) => setStatusText(status)
+      );
       setResult(data);
+      
+      // Auto-switch to analysis view on mobile
+      setMobileTab('analysis');
       
       // Save to History
       const newHistoryItem: HistoryItem = {
@@ -67,6 +78,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       console.error(error);
     } finally {
       setIsAnalyzing(false);
+      setStatusText(null);
     }
   };
 
@@ -77,6 +89,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setContentType(item.contentType);
     setActivePanel(null);
     setErrorMsg(null);
+    setMobileTab('analysis');
   };
 
   const handleDeleteHistory = (e: React.MouseEvent, id: string) => {
@@ -231,8 +244,11 @@ Guideline: ${i.guidelineRef}
   };
 
   const handleCopyClean = () => {
-    if (analyzedContent) {
-      navigator.clipboard.writeText(analyzedContent);
+    // Use the cleanContent from result if available (calculated in service),
+    // otherwise fallback to analyzedContent (current view state)
+    const textToCopy = result?.cleanContent || analyzedContent;
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
     }
   };
   
@@ -315,8 +331,35 @@ Guideline: ${i.guidelineRef}
       {/* Main Workspace */}
       <main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         
+        {/* Mobile Tabs */}
+        <div className="lg:hidden flex border-b border-pw-border bg-white text-sm font-medium shrink-0">
+          <button 
+            onClick={() => setMobileTab('input')} 
+            className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'input' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+          >
+            <Edit3 size={16} /> Input
+          </button>
+          <button 
+            onClick={() => setMobileTab('analysis')} 
+            className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'analysis' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+          >
+            <Layout size={16} /> View
+          </button>
+          <button 
+            onClick={() => setMobileTab('issues')} 
+            className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'issues' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+          >
+            <List size={16} /> Issues
+            {result?.issues.filter((i: Issue) => i.status !== 'fixed').length > 0 && (
+              <span className="bg-red-100 text-red-600 text-[10px] px-1.5 rounded-full">
+                {result.issues.filter((i: Issue) => i.status !== 'fixed').length}
+              </span>
+            )}
+          </button>
+        </div>
+
         {/* Column 1: Input */}
-        <div className="flex-1 flex flex-col border-r border-pw-border min-w-[320px] bg-white lg:max-w-md">
+        <div className={`flex-1 flex-col border-r border-pw-border min-w-[320px] bg-white lg:max-w-md ${mobileTab === 'input' ? 'flex' : 'hidden lg:flex'}`}>
           <div className="p-4 border-b border-pw-border space-y-4 bg-pw-bg/30">
             <div>
               <label className="block text-xs font-semibold text-pw-muted uppercase mb-1">Content Type</label>
@@ -374,7 +417,7 @@ Guideline: ${i.guidelineRef}
               {isAnalyzing ? (
                 <>
                   <Loader className="animate-spin" size={18} />
-                  Analyzing...
+                  {statusText || "Analyzing..."}
                 </>
               ) : (
                 <>
@@ -402,7 +445,7 @@ Guideline: ${i.guidelineRef}
         </div>
 
         {/* Column 2: Analysis */}
-        <div className="flex-[1.5] flex flex-col min-w-[320px] bg-pw-bg overflow-hidden relative">
+        <div className={`flex-[1.5] flex-col min-w-[320px] bg-pw-bg overflow-hidden relative ${mobileTab === 'analysis' ? 'flex' : 'hidden lg:flex'}`}>
           <div className="p-3 border-b border-pw-border flex justify-between items-center bg-white shadow-sm z-10">
             <h2 className="text-sm font-semibold text-pw-text">Analyzed Content</h2>
             
@@ -472,7 +515,10 @@ Guideline: ${i.guidelineRef}
                 <AnalysisPanel 
                   content={analyzedContent} 
                   issues={result?.issues || []} 
-                  onIssueClick={(issue) => setActiveIssueId(issue.id)}
+                  onIssueClick={(issue) => {
+                    setActiveIssueId(issue.id);
+                    setMobileTab('issues'); // Jump to details on mobile
+                  }}
                   activeIssueId={activeIssueId}
                 />
              </div>
@@ -494,7 +540,7 @@ Guideline: ${i.guidelineRef}
         </div>
 
         {/* Column 3: Issues */}
-        <div className="flex-1 flex flex-col border-l border-pw-border bg-white lg:max-w-sm min-w-[300px]">
+        <div className={`flex-1 flex-col border-l border-pw-border bg-white lg:max-w-sm min-w-[300px] ${mobileTab === 'issues' ? 'flex' : 'hidden lg:flex'}`}>
           <div className="p-4 border-b border-pw-border bg-pw-bg/30">
             <h2 className="font-semibold text-pw-text mb-3">Issues Found</h2>
             {result ? (
@@ -532,7 +578,10 @@ Guideline: ${i.guidelineRef}
                     bg-white rounded-lg border shadow-sm transition-all duration-200 cursor-pointer
                     ${isSelected ? 'border-pw-blue ring-1 ring-pw-blue shadow-md' : 'border-pw-border hover:border-gray-300'}
                   `}
-                  onClick={() => setActiveIssueId(issue.id)}
+                  onClick={() => {
+                    setActiveIssueId(issue.id);
+                    setMobileTab('analysis'); // Jump to context on mobile
+                  }}
                 >
                   <div className={`px-3 py-2 border-b flex justify-between items-center ${issue.status === 'ignored' ? 'opacity-50' : ''}`}>
                     <div className="flex items-center gap-2">
