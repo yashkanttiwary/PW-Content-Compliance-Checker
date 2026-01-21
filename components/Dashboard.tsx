@@ -19,6 +19,7 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
   const [content, setContent] = useState('');
+  const [analyzedContent, setAnalyzedContent] = useState('');
   const [contentType, setContentType] = useState<ContentType>(appState.profile?.defaultContentType || ContentType.VIDEO_SCRIPT);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<any>(null); // Using any for simplicity in mapping AnalysisResult
@@ -31,6 +32,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
     if (!content.trim()) return;
     setIsAnalyzing(true);
     setResult(null);
+    setAnalyzedContent(content); // Snapshot content for analysis view
     try {
       const data = await geminiService.analyzeContent(content, contentType);
       setResult(data);
@@ -41,6 +43,13 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleClear = () => {
+    setContent('');
+    setAnalyzedContent('');
+    setResult(null);
+    setActiveIssueId(undefined);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -54,7 +63,11 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
   };
 
   const handleApplyFix = (issue: Issue) => {
-    // Simple text replacement
+    // Update analyzedContent to reflect the fix in the center panel
+    const newAnalyzedContent = analyzedContent.replace(issue.originalText, issue.suggestion);
+    setAnalyzedContent(newAnalyzedContent);
+
+    // Also update source content to keep it in sync
     const newContent = content.replace(issue.originalText, issue.suggestion);
     setContent(newContent);
     
@@ -121,7 +134,7 @@ Guideline: ${i.guidelineRef}
   };
   
   const handleCopyCurrent = () => {
-    navigator.clipboard.writeText(content);
+    navigator.clipboard.writeText(analyzedContent);
     // Optional: could add a toast here
     const btn = document.getElementById('copy-current-btn');
     if (btn) {
@@ -134,7 +147,7 @@ Guideline: ${i.guidelineRef}
   const handleDownloadDoc = () => {
     const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'></head><body><pre style='font-family: monospace; font-size: 11pt; white-space: pre-wrap;'>";
     const footer = "</pre></body></html>";
-    const sourceHTML = header + content + footer;
+    const sourceHTML = header + analyzedContent + footer;
     
     const blob = new Blob(['\ufeff', sourceHTML], {
         type: 'application/msword'
@@ -151,7 +164,7 @@ Guideline: ${i.guidelineRef}
 
   const handleDownloadPDF = () => {
     const doc = new jsPDF();
-    const splitText = doc.splitTextToSize(content, 180);
+    const splitText = doc.splitTextToSize(analyzedContent, 180);
     doc.text(splitText, 10, 10);
     doc.save(`pw-content-${Date.now()}.pdf`);
     setShowDownloadMenu(false);
@@ -221,7 +234,7 @@ Guideline: ${i.guidelineRef}
             />
             <div className="absolute bottom-4 right-4 flex gap-2">
                <button 
-                 onClick={() => setContent('')}
+                 onClick={handleClear}
                  className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-error hover:border-pw-error transition-colors"
                  title="Clear"
                >
@@ -297,7 +310,7 @@ Guideline: ${i.guidelineRef}
                 <button 
                   id="copy-current-btn"
                   onClick={handleCopyCurrent} 
-                  disabled={!content}
+                  disabled={!analyzedContent}
                   className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
                   title="Copy Current Content"
                 >
@@ -307,7 +320,7 @@ Guideline: ${i.guidelineRef}
                 <div className="relative">
                   <button 
                     onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-                    disabled={!content}
+                    disabled={!analyzedContent}
                     className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
                     title="Download"
                   >
@@ -343,7 +356,7 @@ Guideline: ${i.guidelineRef}
           
           <div className="flex-1 p-4 overflow-hidden relative">
              <AnalysisPanel 
-               content={content} 
+               content={analyzedContent} 
                issues={result?.issues || []} 
                onIssueClick={(issue) => setActiveIssueId(issue.id)}
                activeIssueId={activeIssueId}

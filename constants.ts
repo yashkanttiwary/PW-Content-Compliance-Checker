@@ -59,16 +59,18 @@ JSON RESPONSE FORMAT:
 {
   "issues": [
     {
-      "originalText": "exact substring from text",
+      "originalText": "exact substring from text to be replaced",
       "category": "Category Name",
       "severity": "CRITICAL" | "WARNING" | "SUGGESTION",
       "explanation": "Why this is flagged",
-      "suggestion": "How to fix it",
+      "suggestion": "The EXACT replacement text ONLY. Do NOT include explanations. If removing, use empty string.",
       "guidelineRef": "Guideline Name"
     }
   ],
   "cleanContent": "Rewritten content with all fixes applied"
 }
+
+IMPORTANT: The 'suggestion' field must ONLY contain the replacement text. Do NOT add context like 'Use X instead' or 'Change to Y'. JUST the new text.
 
 Identify ALL issues. Be strict but helpful.
 `;
