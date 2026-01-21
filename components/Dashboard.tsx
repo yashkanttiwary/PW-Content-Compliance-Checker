@@ -110,32 +110,59 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   };
 
   const handleApplyFix = (issue: Issue) => {
-    // Find the issue in the current result state to ensure we have the latest indices
-    const currentIssue = result.issues.find((i: Issue) => i.id === issue.id);
-    
-    if (!currentIssue || typeof currentIssue.startIndex !== 'number' || typeof currentIssue.endIndex !== 'number') {
-      console.error("Invalid issue indices", currentIssue);
-      return;
-    }
-    
-    // Apply fix to the content
-    const prefix = analyzedContent.slice(0, currentIssue.startIndex);
-    const suffix = analyzedContent.slice(currentIssue.endIndex);
-    const newContent = prefix + currentIssue.suggestion + suffix;
-    
-    setAnalyzedContent(newContent);
-    setContent(newContent); // Sync source
+    // We use a functional update for the result to ensure we are working with the latest state
+    // preventing race conditions with multiple rapid clicks.
+    setResult((prevResult: any) => {
+      if (!prevResult) return null;
 
-    // Calculate length difference to shift subsequent issues
-    const lengthDiff = currentIssue.suggestion.length - (currentIssue.endIndex - currentIssue.startIndex);
+      // Find the issue in the current/prev state (it might have been updated by previous fixes)
+      const currentIssue = prevResult.issues.find((i: Issue) => i.id === issue.id);
+      
+      // Validation: Indices must exist
+      if (!currentIssue || typeof currentIssue.startIndex !== 'number' || typeof currentIssue.endIndex !== 'number') {
+        console.error("Invalid issue indices", currentIssue);
+        setErrorMsg("Unable to apply fix: Issue data is invalid.");
+        return prevResult;
+      }
+      
+      // CRITICAL VALIDATION: Content Integrity Check
+      // Verify that the text at the target range strictly matches the expected original text.
+      // This protects against index drift if the document state has desynchronized.
+      const targetText = analyzedContent.slice(currentIssue.startIndex, currentIssue.endIndex);
+      if (targetText !== currentIssue.originalText) {
+        setErrorMsg(`Sync error: The content has changed or shifted. Expected "${currentIssue.originalText}" but found "${targetText}". Please re-analyze.`);
+        // Mark as broken/ignored so user doesn't try again
+        return {
+          ...prevResult,
+          issues: prevResult.issues.map((i: Issue) => 
+            i.id === issue.id ? { ...i, status: 'ignored' } : i
+          )
+        };
+      }
+      
+      // Apply fix to the content
+      // Note: we are reading analyzedContent from closure, but since we validated targetText above,
+      // we know this closure's analyzedContent is consistent with the issue's indices.
+      const prefix = analyzedContent.slice(0, currentIssue.startIndex);
+      const suffix = analyzedContent.slice(currentIssue.endIndex);
+      const newContent = prefix + currentIssue.suggestion + suffix;
+      
+      // Update Content State
+      setAnalyzedContent(newContent);
+      setContent(newContent); // Sync source
+      setErrorMsg(null); // Clear errors on success
 
-    if (result) {
-      const updatedIssues = result.issues.map((i: Issue) => {
+      // Calculate length difference to shift subsequent issues
+      const lengthDiff = currentIssue.suggestion.length - (currentIssue.endIndex - currentIssue.startIndex);
+
+      // Create updated issues list with index shifting
+      const updatedIssues = prevResult.issues.map((i: Issue) => {
         if (i.id === issue.id) {
           return { ...i, status: 'fixed' };
         }
         
-        // Shift indices for issues that occur AFTER the fixed issue
+        // Shift indices for issues that occur strictly AFTER the fixed issue's start index
+        // This preserves relative positions.
         if (typeof i.startIndex === 'number' && i.startIndex > currentIssue.startIndex!) {
           return {
             ...i,
@@ -146,27 +173,34 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         return i;
       });
 
-      setResult({
-        ...result,
+      // Update summary counts
+      const newSummary = { ...prevResult.summary };
+      if (currentIssue.status !== 'fixed') { 
+        // Only decrement if not already fixed/ignored (idempotency)
+        const severityKey = issue.severity.toLowerCase() as keyof typeof prevResult.summary;
+        if (newSummary[severityKey] > 0) newSummary[severityKey]--;
+      }
+
+      return {
+        ...prevResult,
         issues: updatedIssues,
-        summary: {
-           ...result.summary,
-           [issue.severity.toLowerCase()]: Math.max(0, result.summary[issue.severity.toLowerCase() as keyof typeof result.summary] - 1)
-        }
-      });
-    }
+        summary: newSummary
+      };
+    });
+    
     setActiveIssueId(undefined);
   };
 
   const handleIgnore = (issueId: string) => {
-    if (result) {
-      setResult({
-        ...result,
-        issues: result.issues.map((i: Issue) => 
+    setResult((prev: any) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        issues: prev.issues.map((i: Issue) => 
           i.id === issueId ? { ...i, status: 'ignored' } : i
         )
-      });
-    }
+      };
+    });
   };
 
   const handleExport = () => {

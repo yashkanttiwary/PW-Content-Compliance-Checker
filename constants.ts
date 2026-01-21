@@ -2,6 +2,8 @@ import { ContentType, Severity } from './types';
 
 export const CONTENT_TYPE_OPTIONS = Object.values(ContentType);
 
+export const GEMINI_MODEL = 'gemini-3-flash-preview';
+
 export const GUIDELINE_CATEGORIES = [
   "IPO Information",
   "Superlatives & Comparatives",

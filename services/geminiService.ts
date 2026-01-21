@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { SYSTEM_PROMPT } from "../constants";
+import { SYSTEM_PROMPT, GEMINI_MODEL } from "../constants";
 import { AnalysisResult, Issue, Severity } from "../types";
 
 // Developed by Yash Kant Tiwary (PW26173)
@@ -21,7 +21,7 @@ export class GeminiService {
     if (!this.ai) return false;
     try {
       await this.ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: GEMINI_MODEL,
         contents: 'ping',
       });
       return true;
@@ -36,18 +36,42 @@ export class GeminiService {
 
     const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content}`;
 
-    const response = await this.ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        responseMimeType: "application/json",
-        temperature: 0.2, // Low temperature for consistent adherence to rules
-      }
-    });
+    let attempts = 0;
+    const maxAttempts = 3;
+    let textResponse = '';
 
-    const textResponse = response.text;
-    if (!textResponse) throw new Error("No response from AI");
+    while (attempts < maxAttempts) {
+      try {
+        attempts++;
+        const response = await this.ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            responseMimeType: "application/json",
+            temperature: 0.2, // Low temperature for consistent adherence to rules
+          }
+        });
+        textResponse = response.text || '';
+        if (textResponse) break;
+      } catch (e: any) {
+        // Check for Rate Limit (429) or Service Unavailable (503)
+        const isRateLimit = e.message?.includes('429') || e.status === 429 || e.status === 503;
+        
+        if (isRateLimit && attempts < maxAttempts) {
+          // Exponential backoff: 1s, 2s, 4s...
+          const delay = Math.pow(2, attempts - 1) * 1000;
+          console.warn(`Rate limited. Retrying in ${delay}ms... (Attempt ${attempts}/${maxAttempts})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        // If not retryable or max attempts reached
+        throw e;
+      }
+    }
+
+    if (!textResponse) throw new Error("No response from AI after retries");
 
     try {
       const parsed = JSON.parse(textResponse);
