@@ -19,7 +19,7 @@ export class GeminiService {
     if (!this.ai) return false;
     try {
       await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash-latest', // Using a fast model for validation
+        model: 'gemini-3-flash-preview',
         contents: 'ping',
       });
       return true;
@@ -35,7 +35,7 @@ export class GeminiService {
     const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content}`;
 
     const response = await this.ai.models.generateContent({
-      model: 'gemini-2.5-flash-latest',
+      model: 'gemini-3-flash-preview',
       contents: prompt,
       config: {
         systemInstruction: SYSTEM_PROMPT,
