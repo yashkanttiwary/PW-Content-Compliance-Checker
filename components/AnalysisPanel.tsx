@@ -72,16 +72,19 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
   const lines = content.split('\n').length;
 
   return (
-    <div className="flex h-full bg-white rounded-lg border border-pw-border shadow-sm overflow-auto font-mono text-sm leading-6 relative scroll-smooth">
-      {/* Gutter */}
-      <div className="w-10 bg-gray-50 border-r border-pw-border flex-shrink-0 text-right py-4 pr-2 text-pw-muted select-none text-xs sticky left-0 z-10 min-h-full">
+    <div 
+      className="flex h-full bg-white rounded-lg border border-pw-border shadow-sm overflow-auto font-mono text-sm leading-6 relative"
+      ref={containerRef}
+    >
+      {/* Gutter: Sticky to left, scrolls vertically with content */}
+      <div className="sticky left-0 z-20 w-10 bg-gray-50 border-r border-pw-border flex-shrink-0 text-right py-4 pr-2 text-pw-muted select-none text-xs min-h-full">
         {Array.from({ length: lines }, (_, i) => (
           <div key={i} className="h-6 leading-6">{i + 1}</div>
         ))}
       </div>
 
       {/* Content */}
-      <div className="flex-1 p-4 whitespace-pre-wrap min-h-full" ref={containerRef}>
+      <div className="flex-1 p-4 whitespace-pre min-w-max">
         {segments.map((segment, idx) => {
           if (!segment.issue) return <span key={idx}>{segment.text}</span>;
 

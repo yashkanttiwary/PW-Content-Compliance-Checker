@@ -197,13 +197,8 @@ Guideline: ${i.guidelineRef}
   };
 
   const handleCopyClean = () => {
-    // If we have manipulated the content via fixes, 'analyzedContent' is the current clean version
-    // If we rely on AI's cleanContent, it might be outdated if we manually fixed things.
-    // The safest is to copy 'analyzedContent' if manual fixes were applied, or result.cleanContent if strictly AI.
-    // Given the app flow, analyzedContent is the single source of truth for the visible editor.
     if (analyzedContent) {
       navigator.clipboard.writeText(analyzedContent);
-      // Removed alert, using simple feedback if possible, or nothing for now
     }
   };
   
@@ -241,7 +236,6 @@ Guideline: ${i.guidelineRef}
     setShowDownloadMenu(false);
   };
 
-  // Helper for stats
   const wordCount = content.trim() === '' ? 0 : content.trim().split(/\s+/).length;
   
   const getReadingTime = () => {
@@ -307,7 +301,7 @@ Guideline: ${i.guidelineRef}
           
           <div className="flex-1 relative">
             <textarea
-              className="w-full h-full p-4 resize-none outline-none font-mono text-sm leading-relaxed"
+              className="w-full h-full p-4 resize-none outline-none font-mono text-sm leading-relaxed whitespace-pre overflow-auto"
               placeholder="Paste your content here..."
               value={content}
               onChange={(e) => setContent(e.target.value)}
