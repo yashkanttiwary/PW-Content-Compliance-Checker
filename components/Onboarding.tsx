@@ -88,13 +88,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     href="https://aistudio.google.com/app/apikey" 
                     target="_blank" 
                     rel="noreferrer" 
-                    className="text-xs text-pw-blue flex items-center gap-1 hover:underline font-medium focus:outline-none transition-colors"
+                    className="text-xs text-pw-blue hover:text-blue-700 flex items-center gap-1 hover:underline transition-colors"
                   >
                     Get Key from Google AI Studio <ExternalLink size={12} />
                   </a>
                   <button 
                     onClick={() => setShowHelp(!showHelp)}
-                    className="text-xs text-pw-blue flex items-center gap-1 hover:underline font-medium focus:outline-none transition-colors"
+                    className="text-xs text-pw-blue hover:text-blue-700 flex items-center gap-1 hover:underline bg-transparent border-none p-0 transition-colors"
                   >
                     <HelpCircle size={12} />
                     {showHelp ? 'Hide help' : 'Need help?'}
