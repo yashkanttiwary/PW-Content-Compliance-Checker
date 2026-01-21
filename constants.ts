@@ -14,6 +14,63 @@ export const GUIDELINE_CATEGORIES = [
   "Controversial Content"
 ];
 
+export const GUIDELINE_DETAILS = [
+  {
+    title: "1. IPO Information",
+    severity: Severity.CRITICAL,
+    description: "Strict prohibition on financial terminology usually associated with public listings.",
+    examples: "IPO, stock, shares, valuation, listing, going public, fundraising, investor returns."
+  },
+  {
+    title: "2. Superlatives & Comparatives",
+    severity: Severity.CRITICAL,
+    description: "Avoid absolute claims that cannot be factually substantiated.",
+    examples: "Best, Top, #1, Biggest, Unmatched, Unparalleled, Leading (without source)."
+  },
+  {
+    title: "3. Unsubstantiated Descriptors",
+    severity: Severity.WARNING,
+    description: "Avoid subjective adjectives that frame opinions as facts.",
+    examples: "Expert (use Experienced), Unique, Revolutionary, Historic."
+  },
+  {
+    title: "4. Success Claims",
+    severity: Severity.CRITICAL,
+    description: "Do not promise outcomes that are not guaranteed.",
+    examples: "Guarantee success, 100% results, Crack the exam, Achieve your dreams."
+  },
+  {
+    title: "5. Unverified Metrics",
+    severity: Severity.CRITICAL,
+    description: "All statistics and numbers must be accurate and verifiable.",
+    examples: "50,000 selections, Highest package, 1M+ students (unless sourced)."
+  },
+  {
+    title: "6. Forward-Looking Statements",
+    severity: Severity.CRITICAL,
+    description: "Avoid speculative statements about future business performance.",
+    examples: "Will achieve, Future growth, Upcoming expansion, Planned centers."
+  },
+  {
+    title: "7. Coaching Guidelines 2024",
+    severity: Severity.CRITICAL,
+    description: "Strict adherence to government coaching center guidelines.",
+    examples: "False urgency (Limited seats), Rank guarantees, Misleading testimonials."
+  },
+  {
+    title: "8. Third-Party IP",
+    severity: Severity.WARNING,
+    description: "Respect intellectual property and trademarks of others.",
+    examples: "Competitor names, copyrighted music/text, brand logos."
+  },
+  {
+    title: "9. Controversial Content",
+    severity: Severity.WARNING,
+    description: "Maintain neutrality and professionalism.",
+    examples: "Market rumors, political comments, aggressive competitive claims."
+  }
+];
+
 export const SEVERITY_COLORS = {
   [Severity.CRITICAL]: {
     bg: 'bg-red-50',

@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
-  Play, RotateCcw, FileText, Upload, Copy, Download, 
-  ChevronDown, ChevronRight, X, Check, AlertTriangle, Info,
-  History, Settings as SettingsIcon, HelpCircle, Loader, FileType
+  Play, FileText, Upload, Copy, Download, 
+  ChevronDown, X, Check, Info,
+  History, Settings as SettingsIcon, HelpCircle, Loader, FileType,
+  Trash2, RotateCcw, Shield, User, LogOut, ExternalLink
 } from 'lucide-react';
-import { AppState, ContentType, Issue, Severity } from '../types';
+import { AppState, ContentType, HistoryItem, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
 import AnalysisPanel from './AnalysisPanel';
-import { CONTENT_TYPE_OPTIONS, SEVERITY_COLORS } from '../constants';
+import { CONTENT_TYPE_OPTIONS, SEVERITY_COLORS, GUIDELINE_DETAILS } from '../constants';
 import { jsPDF } from 'jspdf';
 
 // Developed by Yash Kant Tiwary (PW26173)
@@ -15,33 +16,75 @@ import { jsPDF } from 'jspdf';
 interface DashboardProps {
   appState: AppState;
   onLogout: () => void;
+  onUpdateAppState: (newState: AppState) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
+const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppState }) => {
   const [content, setContent] = useState('');
   const [analyzedContent, setAnalyzedContent] = useState('');
   const [contentType, setContentType] = useState<ContentType>(appState.profile?.defaultContentType || ContentType.VIDEO_SCRIPT);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<any>(null); // Using any for simplicity in mapping AnalysisResult
+  const [result, setResult] = useState<any>(null);
   const [activeIssueId, setActiveIssueId] = useState<string | undefined>(undefined);
   const [geminiService] = useState(() => new GeminiService(appState.apiKey || ''));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  
+  // New UI State
+  const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
 
   const handleAnalyze = async () => {
     if (!content.trim()) return;
     setIsAnalyzing(true);
     setResult(null);
-    setAnalyzedContent(content); // Snapshot content for analysis view
+    setAnalyzedContent(content);
+    
     try {
       const data = await geminiService.analyzeContent(content, contentType);
       setResult(data);
-      // Auto-save to history (mock implementation)
-      // saveToHistory(data);
+      
+      // Save to History
+      const newHistoryItem: HistoryItem = {
+        id: Date.now().toString(),
+        date: new Date().toISOString(),
+        contentType,
+        snippet: content.substring(0, 80) + (content.length > 80 ? '...' : ''),
+        issuesCount: data.summary.total,
+        data: {
+          ...data,
+          cleanContent: data.cleanContent // Ensure clean content is stored
+        },
+        originalContent: content
+      };
+
+      const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 50); // Keep last 50
+      onUpdateAppState({ ...appState, history: updatedHistory });
+
     } catch (error) {
       alert("Analysis failed. Please check your connection or API key.");
+      console.error(error);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleRestoreHistory = (item: HistoryItem) => {
+    setContent(item.originalContent);
+    setAnalyzedContent(item.originalContent);
+    setResult(item.data);
+    setContentType(item.contentType);
+    setActivePanel(null);
+  };
+
+  const handleDeleteHistory = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const updatedHistory = appState.history.filter(item => item.id !== id);
+    onUpdateAppState({ ...appState, history: updatedHistory });
+  };
+
+  const handleClearHistory = () => {
+    if (confirm("Are you sure you want to clear all history?")) {
+      onUpdateAppState({ ...appState, history: [] });
     }
   };
 
@@ -63,15 +106,13 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
   };
 
   const handleApplyFix = (issue: Issue) => {
-    // Update analyzedContent to reflect the fix in the center panel
     const newAnalyzedContent = analyzedContent.replace(issue.originalText, issue.suggestion);
     setAnalyzedContent(newAnalyzedContent);
-
-    // Also update source content to keep it in sync
+    
+    // Also update source content to keep it in sync for future analysis
     const newContent = content.replace(issue.originalText, issue.suggestion);
     setContent(newContent);
     
-    // Mark issue as fixed
     if (result) {
       setResult({
         ...result,
@@ -80,8 +121,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout }) => {
         ),
         summary: {
            ...result.summary,
-           // Recalculate summary counts roughly
-           [issue.severity.toLowerCase()]: result.summary[issue.severity.toLowerCase() as keyof typeof result.summary] - 1
+           [issue.severity.toLowerCase()]: Math.max(0, result.summary[issue.severity.toLowerCase() as keyof typeof result.summary] - 1)
         }
       });
     }
@@ -135,7 +175,6 @@ Guideline: ${i.guidelineRef}
   
   const handleCopyCurrent = () => {
     navigator.clipboard.writeText(analyzedContent);
-    // Optional: could add a toast here
     const btn = document.getElementById('copy-current-btn');
     if (btn) {
       const original = btn.innerHTML;
@@ -149,9 +188,7 @@ Guideline: ${i.guidelineRef}
     const footer = "</pre></body></html>";
     const sourceHTML = header + analyzedContent + footer;
     
-    const blob = new Blob(['\ufeff', sourceHTML], {
-        type: 'application/msword'
-    });
+    const blob = new Blob(['\ufeff', sourceHTML], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -174,7 +211,7 @@ Guideline: ${i.guidelineRef}
   const wordCount = content.trim() === '' ? 0 : content.trim().split(/\s+/).length;
   
   const getReadingTime = () => {
-    const wordsPerMinute = 150; // Average speaking pace
+    const wordsPerMinute = 150;
     const minutes = wordCount / wordsPerMinute;
     const wholeMinutes = Math.floor(minutes);
     const seconds = Math.round((minutes - wholeMinutes) * 60);
@@ -182,7 +219,7 @@ Guideline: ${i.guidelineRef}
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative">
       {/* Header */}
       <header className="h-14 bg-white border-b border-pw-border flex items-center justify-between px-4 shrink-0 z-20">
         <div className="flex items-center gap-2">
@@ -191,21 +228,30 @@ Guideline: ${i.guidelineRef}
         </div>
         
         <div className="flex items-center gap-2">
-          <button className="p-2 text-pw-muted hover:bg-gray-100 rounded-md flex items-center gap-2 text-sm">
+          <button 
+            onClick={() => setActivePanel('history')}
+            className={`p-2 rounded-md flex items-center gap-2 text-sm transition-colors ${activePanel === 'history' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+          >
             <History size={18} />
             <span className="hidden md:inline">History</span>
           </button>
-          <button onClick={onLogout} className="p-2 text-pw-muted hover:bg-gray-100 rounded-md">
+          <button 
+            onClick={() => setActivePanel('settings')}
+            className={`p-2 rounded-md transition-colors ${activePanel === 'settings' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+          >
             <SettingsIcon size={18} />
           </button>
-          <button className="p-2 text-pw-muted hover:bg-gray-100 rounded-md">
+          <button 
+            onClick={() => setActivePanel('help')}
+            className={`p-2 rounded-md transition-colors ${activePanel === 'help' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+          >
             <HelpCircle size={18} />
           </button>
         </div>
       </header>
 
       {/* Main Workspace */}
-      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         
         {/* Column 1: Input */}
         <div className="flex-1 flex flex-col border-r border-pw-border min-w-[320px] bg-white lg:max-w-md">
@@ -288,7 +334,6 @@ Guideline: ${i.guidelineRef}
             </div>
           </div>
           
-          {/* Visible Watermark in Input Column Footer */}
           <div className="p-2 border-t border-pw-border bg-white text-[10px] text-gray-300 text-center font-mono select-none">
             PW26173 - Yash Kant Tiwary
           </div>
@@ -474,6 +519,179 @@ Guideline: ${i.guidelineRef}
             )}
           </div>
         </div>
+
+        {/* History Sidebar */}
+        {activePanel === 'history' && (
+          <div className="absolute inset-0 z-30 flex justify-end">
+            <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
+            <div className="bg-white w-full max-w-sm h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 border-l border-pw-border relative">
+              <div className="p-4 border-b border-pw-border flex justify-between items-center bg-gray-50">
+                <h3 className="font-semibold text-pw-text flex items-center gap-2">
+                  <History size={18} /> History
+                </h3>
+                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-pw-bg/50">
+                {appState.history.length === 0 ? (
+                  <div className="text-center text-pw-muted py-8">
+                    <History size={32} className="mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No history yet</p>
+                  </div>
+                ) : (
+                  appState.history.map((item) => (
+                    <div key={item.id} className="bg-white p-3 rounded-lg border border-pw-border shadow-sm hover:border-pw-blue transition-colors group">
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-xs font-semibold text-pw-blue bg-blue-50 px-2 py-0.5 rounded">{item.contentType}</span>
+                        <div className="flex items-center gap-2">
+                           <span className="text-[10px] text-pw-muted">{new Date(item.date).toLocaleDateString()}</span>
+                           <button 
+                             onClick={(e) => handleDeleteHistory(e, item.id)}
+                             className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                           >
+                             <Trash2 size={14} />
+                           </button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-pw-muted mb-3 line-clamp-2 font-mono bg-gray-50 p-1.5 rounded">"{item.snippet}"</p>
+                      <div className="flex justify-between items-center">
+                        <div className="flex gap-1">
+                          {item.data.summary.critical > 0 && <span className="w-2 h-2 rounded-full bg-red-500" title="Critical Issues" />}
+                          {item.data.summary.warning > 0 && <span className="w-2 h-2 rounded-full bg-amber-500" title="Warnings" />}
+                        </div>
+                        <button 
+                          onClick={() => handleRestoreHistory(item)}
+                          className="text-xs flex items-center gap-1 text-pw-blue font-medium hover:underline"
+                        >
+                          <RotateCcw size={12} /> Restore
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              {appState.history.length > 0 && (
+                <div className="p-4 border-t border-pw-border bg-gray-50">
+                  <button 
+                    onClick={handleClearHistory}
+                    className="w-full py-2 text-xs text-red-600 border border-red-200 hover:bg-red-50 rounded flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <Trash2 size={14} /> Clear History
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Help Sidebar */}
+        {activePanel === 'help' && (
+          <div className="absolute inset-0 z-30 flex justify-end">
+            <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
+            <div className="bg-white w-full max-w-sm h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 border-l border-pw-border relative">
+              <div className="p-4 border-b border-pw-border flex justify-between items-center bg-blue-50">
+                <h3 className="font-semibold text-pw-text flex items-center gap-2">
+                  <HelpCircle size={18} /> Compliance Guidelines
+                </h3>
+                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded">
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="text-xs text-pw-muted bg-yellow-50 p-3 rounded border border-yellow-100 mb-4">
+                  Always consult with the PW Legal Team for specific cases not covered here.
+                </div>
+                {GUIDELINE_DETAILS.map((rule, idx) => (
+                  <div key={idx} className="border-b border-pw-border last:border-0 pb-4 last:pb-0">
+                    <div className="flex justify-between items-start mb-1">
+                      <h4 className="text-sm font-semibold text-pw-text">{rule.title}</h4>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${SEVERITY_COLORS[rule.severity].badge}`}>
+                        {rule.severity === Severity.CRITICAL ? 'CRITICAL' : 'WARN'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-pw-text mb-2 leading-relaxed">{rule.description}</p>
+                    <div className="bg-gray-50 p-2 rounded text-xs border border-gray-100">
+                      <span className="font-semibold text-pw-muted">Examples: </span>
+                      <span className="text-gray-600 italic">{rule.examples}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Settings Modal */}
+        {activePanel === 'settings' && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
+            <div className="bg-white w-full max-w-md rounded-lg shadow-2xl animate-in fade-in zoom-in duration-200 relative overflow-hidden">
+              <div className="p-6">
+                 <div className="flex justify-between items-center mb-6">
+                   <h2 className="text-xl font-bold text-pw-text flex items-center gap-2">
+                     <SettingsIcon size={24} className="text-pw-blue" /> Settings
+                   </h2>
+                   <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-100 rounded-full">
+                     <X size={20} />
+                   </button>
+                 </div>
+                 
+                 <div className="space-y-6">
+                    <div>
+                      <h3 className="text-sm font-semibold text-pw-text mb-3 flex items-center gap-2">
+                        <User size={16} /> Profile Settings
+                      </h3>
+                      <div className="space-y-3">
+                         <div>
+                           <label className="block text-xs text-pw-muted mb-1">Display Name</label>
+                           <input 
+                              type="text" 
+                              value={appState.profile?.name || ''}
+                              onChange={(e) => onUpdateAppState({ ...appState, profile: { ...appState.profile!, name: e.target.value } })}
+                              className="w-full p-2 border border-pw-border rounded text-sm focus:ring-1 focus:ring-pw-blue outline-none"
+                              placeholder="Your Name"
+                           />
+                         </div>
+                         <div>
+                           <label className="block text-xs text-pw-muted mb-1">Default Content Type</label>
+                           <select 
+                              value={appState.profile?.defaultContentType}
+                              onChange={(e) => onUpdateAppState({ ...appState, profile: { ...appState.profile!, defaultContentType: e.target.value as ContentType } })}
+                              className="w-full p-2 border border-pw-border rounded text-sm bg-white focus:ring-1 focus:ring-pw-blue outline-none"
+                           >
+                             {CONTENT_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                           </select>
+                         </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-pw-border pt-6">
+                      <h3 className="text-sm font-semibold text-pw-text mb-3 flex items-center gap-2">
+                         <Shield size={16} /> Application
+                      </h3>
+                      <div className="space-y-3">
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="flex items-center justify-between p-3 border border-pw-border rounded hover:bg-gray-50 transition-colors text-sm">
+                           <span>Manage Gemini API Key</span>
+                           <ExternalLink size={14} className="text-pw-muted" />
+                        </a>
+                        <button 
+                          onClick={onLogout}
+                          className="w-full flex items-center justify-center gap-2 p-3 text-red-600 border border-red-200 rounded hover:bg-red-50 transition-colors text-sm font-medium"
+                        >
+                          <LogOut size={16} /> Disconnect API Key
+                        </button>
+                      </div>
+                    </div>
+                 </div>
+              </div>
+              <div className="bg-gray-50 p-4 text-center text-xs text-pw-muted border-t border-pw-border">
+                Version 1.0.0 • Employee Code: PW26173
+              </div>
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   );

@@ -41,7 +41,7 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
-    if (confirm("Are you sure you want to reset settings? Your API key will be removed.")) {
+    if (confirm("Are you sure you want to disconnect? Your API key will be removed.")) {
       const resetState = { apiKey: null, profile: null, history: [] };
       saveState(resetState);
     }
@@ -54,7 +54,11 @@ const App: React.FC = () => {
       {!appState.apiKey ? (
         <Onboarding onComplete={handleOnboardingComplete} />
       ) : (
-        <Dashboard appState={appState} onLogout={handleLogout} />
+        <Dashboard 
+          appState={appState} 
+          onLogout={handleLogout} 
+          onUpdateAppState={saveState}
+        />
       )}
     </div>
   );
