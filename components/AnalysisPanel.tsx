@@ -97,10 +97,18 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
               key={idx}
               data-issue-id={segment.issue.id}
               onClick={() => segment.issue && onIssueClick(segment.issue)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && segment.issue) {
+                  e.preventDefault();
+                  onIssueClick(segment.issue);
+                }
+              }}
               className={`
-                cursor-pointer transition-all duration-200 rounded px-0.5
+                cursor-pointer transition-all duration-200 rounded px-0.5 outline-none
                 ${colors.highlight}
-                ${isActive ? 'ring-2 ring-offset-1 ring-pw-blue z-10 relative' : ''}
+                ${isActive ? 'ring-2 ring-offset-1 ring-pw-blue z-10 relative' : 'focus:ring-2 focus:ring-offset-1 focus:ring-pw-blue'}
                 ${statusOpacity}
               `}
               title={segment.issue.category}

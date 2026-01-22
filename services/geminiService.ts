@@ -208,13 +208,31 @@ export class GeminiService {
   }
 
   private findMatch(content: string, searchPhrase: string, startFrom: number): { index: number, length: number } | null {
-    // 1. Exact match (fastest and most accurate)
+    const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Try Whole Word Match first (Best for accuracy - Fix H-02)
+    // This avoids matching "best" inside "asbestos" by checking word boundaries
+    try {
+      const escaped = escapeRegExp(searchPhrase);
+      // \b matches word boundaries (start/end of string, space, punctuation, etc.)
+      const wordRegex = new RegExp(`\\b${escaped}\\b`, 'g');
+      wordRegex.lastIndex = startFrom;
+      const wordMatch = wordRegex.exec(content);
+      
+      if (wordMatch) {
+         return { index: wordMatch.index, length: wordMatch[0].length };
+      }
+    } catch (e) {
+      // Ignore regex errors, fallback to standard search
+    }
+
+    // 2. Exact match (Fallback if whole word not found)
     const exactIndex = content.indexOf(searchPhrase, startFrom);
     if (exactIndex !== -1) {
       return { index: exactIndex, length: searchPhrase.length };
     }
 
-    // 2. Flexible Whitespace Match
+    // 3. Flexible Whitespace Match
     // Handles cases where AI normalizes multiple spaces or newlines to single spaces
     try {
       // Split search phrase into words, filtering out empty strings
@@ -222,9 +240,6 @@ export class GeminiService {
       if (parts.length === 0) return null;
 
       // Escape special regex characters in each part
-      const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      
-      // Join parts with \s+ to match any whitespace sequence (spaces, tabs, newlines)
       const pattern = parts.map(escapeRegExp).join('[\\s\\r\\n]+');
       
       const regex = new RegExp(pattern, 'g');

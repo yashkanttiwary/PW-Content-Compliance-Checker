@@ -88,7 +88,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     href="https://aistudio.google.com/app/apikey" 
                     target="_blank" 
                     rel="noreferrer" 
-                    className="text-xs text-pw-blue hover:text-blue-700 flex items-center gap-1 hover:underline transition-colors"
+                    className="text-xs text-black hover:text-gray-700 flex items-center gap-1 hover:underline transition-colors"
                   >
                     Get Key from Google AI Studio <ExternalLink size={12} />
                   </a>

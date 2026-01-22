@@ -37,6 +37,9 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
   const [mobileTab, setMobileTab] = useState<'input' | 'analysis' | 'issues'>('input');
 
+  // Check if content matches analyzed content (for Sync Warning M-02)
+  const isDirty = result && content !== analyzedContent;
+
   const handleAnalyze = async () => {
     if (!content.trim()) return;
     setIsAnalyzing(true);
@@ -56,7 +59,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       // Auto-switch to analysis view on mobile
       setMobileTab('analysis');
       
-      // Save to History
+      // Save to History (M-01: Limit history size)
       const newHistoryItem: HistoryItem = {
         id: Date.now().toString(),
         date: new Date().toISOString(),
@@ -70,7 +73,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         originalContent: content
       };
 
-      const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 50); // Keep last 50
+      const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 20); // Reduced from 50 to 20
       onUpdateAppState({ ...appState, history: updatedHistory });
 
     } catch (error) {
@@ -162,7 +165,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       
       // Update Content State
       setAnalyzedContent(newContent);
-      setContent(newContent); // Sync source
+      setContent(newContent); // Sync source to match applied fix
       setErrorMsg(null); // Clear errors on success
 
       // Calculate length difference to shift subsequent issues
@@ -244,8 +247,6 @@ Guideline: ${i.guidelineRef}
   };
 
   const handleCopyClean = () => {
-    // Use the cleanContent from result if available (calculated in service),
-    // otherwise fallback to analyzedContent (current view state)
     const textToCopy = result?.cleanContent || analyzedContent;
     if (textToCopy) {
       navigator.clipboard.writeText(textToCopy);
@@ -302,13 +303,15 @@ Guideline: ${i.guidelineRef}
       <header className="h-14 bg-white border-b border-pw-border flex items-center justify-between px-4 shrink-0 z-20">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-pw-blue text-white rounded flex items-center justify-center font-bold">PW</div>
-          <h1 className="font-semibold text-pw-text hidden md:block">Compliance Checker</h1>
+          {/* Fix M-03: Ensure title space is reserved/visible on mobile */}
+          <h1 className="font-semibold text-pw-text text-sm md:text-base">Compliance Checker</h1>
         </div>
         
         <div className="flex items-center gap-2">
           <button 
             onClick={() => setActivePanel('history')}
             className={`p-2 rounded-md flex items-center gap-2 text-sm transition-colors ${activePanel === 'history' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+            aria-label="History"
           >
             <History size={18} />
             <span className="hidden md:inline">History</span>
@@ -316,12 +319,14 @@ Guideline: ${i.guidelineRef}
           <button 
             onClick={() => setActivePanel('settings')}
             className={`p-2 rounded-md transition-colors ${activePanel === 'settings' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+            aria-label="Settings"
           >
             <SettingsIcon size={18} />
           </button>
           <button 
             onClick={() => setActivePanel('help')}
             className={`p-2 rounded-md transition-colors ${activePanel === 'help' ? 'bg-blue-50 text-pw-blue' : 'text-pw-muted hover:bg-gray-100'}`}
+            aria-label="Help"
           >
             <HelpCircle size={18} />
           </button>
@@ -336,18 +341,24 @@ Guideline: ${i.guidelineRef}
           <button 
             onClick={() => setMobileTab('input')} 
             className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'input' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+            role="tab"
+            aria-selected={mobileTab === 'input'}
           >
             <Edit3 size={16} /> Input
           </button>
           <button 
             onClick={() => setMobileTab('analysis')} 
             className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'analysis' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+            role="tab"
+            aria-selected={mobileTab === 'analysis'}
           >
             <Layout size={16} /> View
           </button>
           <button 
             onClick={() => setMobileTab('issues')} 
             className={`flex-1 py-3 flex items-center justify-center gap-2 ${mobileTab === 'issues' ? 'text-pw-blue border-b-2 border-pw-blue' : 'text-pw-muted'}`}
+            role="tab"
+            aria-selected={mobileTab === 'issues'}
           >
             <List size={16} /> Issues
             {result?.issues.filter((i: Issue) => i.status !== 'fixed').length > 0 && (
@@ -368,6 +379,7 @@ Guideline: ${i.guidelineRef}
                   className="w-full pl-3 pr-10 py-2 bg-white border border-pw-border rounded-md appearance-none text-sm focus:ring-1 focus:ring-pw-blue focus:border-pw-blue outline-none"
                   value={contentType}
                   onChange={(e) => setContentType(e.target.value as ContentType)}
+                  aria-label="Select Content Type"
                 >
                   {CONTENT_TYPE_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
@@ -382,12 +394,14 @@ Guideline: ${i.guidelineRef}
               placeholder="Paste your content here..."
               value={content}
               onChange={(e) => setContent(e.target.value)}
+              aria-label="Input Content"
             />
             <div className="absolute bottom-4 right-4 flex gap-2">
                <button 
                  onClick={handleClear}
                  className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-error hover:border-pw-error transition-colors"
                  title="Clear"
+                 aria-label="Clear content"
                >
                  <X size={16} />
                </button>
@@ -402,6 +416,7 @@ Guideline: ${i.guidelineRef}
                  onClick={() => fileInputRef.current?.click()}
                  className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-blue hover:border-pw-blue transition-colors"
                  title="Upload File"
+                 aria-label="Upload File"
                >
                  <Upload size={16} />
                </button>
@@ -463,6 +478,7 @@ Guideline: ${i.guidelineRef}
                   disabled={!analyzedContent}
                   className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
                   title="Copy Current Content"
+                  aria-label="Copy Content"
                 >
                   <Copy size={16} />
                 </button>
@@ -473,6 +489,8 @@ Guideline: ${i.guidelineRef}
                     disabled={!analyzedContent}
                     className="p-1.5 text-pw-muted hover:text-pw-blue hover:bg-blue-50 rounded transition-colors"
                     title="Download"
+                    aria-label="Download Menu"
+                    aria-expanded={showDownloadMenu}
                   >
                     <Download size={16} />
                   </button>
@@ -505,6 +523,14 @@ Guideline: ${i.guidelineRef}
           </div>
           
           <div className="flex-1 p-4 overflow-hidden relative flex flex-col">
+             {/* Fix M-02: Show warning if content is dirty */}
+             {isDirty && (
+               <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-md flex items-center gap-2 text-sm animate-in fade-in slide-in-from-top-2">
+                 <AlertTriangle size={16} className="shrink-0" />
+                 <span>Input text has changed. <strong className="cursor-pointer underline" onClick={handleAnalyze}>Re-analyze</strong> to apply fixes safely.</span>
+               </div>
+             )}
+
              {errorMsg && (
                <div className="mb-4 bg-red-50 border border-red-200 text-red-800 p-3 rounded-md flex items-center gap-2 text-sm">
                  <AlertTriangle size={16} />
@@ -574,9 +600,19 @@ Guideline: ${i.guidelineRef}
                 <div 
                   key={issue.id}
                   id={`issue-card-${issue.id}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveIssueId(issue.id);
+                      setMobileTab('analysis');
+                    }
+                  }}
                   className={`
-                    bg-white rounded-lg border shadow-sm transition-all duration-200 cursor-pointer
-                    ${isSelected ? 'border-pw-blue ring-1 ring-pw-blue shadow-md' : 'border-pw-border hover:border-gray-300'}
+                    bg-white rounded-lg border shadow-sm transition-all duration-200 cursor-pointer outline-none
+                    ${isSelected ? 'border-pw-blue ring-1 ring-pw-blue shadow-md' : 'border-pw-border hover:border-gray-300 focus:border-pw-blue focus:ring-1 focus:ring-pw-blue'}
                   `}
                   onClick={() => {
                     setActiveIssueId(issue.id);
@@ -610,12 +646,14 @@ Guideline: ${i.guidelineRef}
                           <button 
                             onClick={(e) => { e.stopPropagation(); handleApplyFix(issue); }}
                             className="flex-1 bg-pw-blue text-white py-1.5 rounded text-xs font-medium hover:bg-blue-700 transition-colors flex items-center justify-center gap-1"
+                            aria-label="Apply Fix"
                           >
                             <Check size={12} /> Apply Fix
                           </button>
                           <button 
                             onClick={(e) => { e.stopPropagation(); handleIgnore(issue.id); }}
                             className="px-3 py-1.5 border border-pw-border text-pw-muted rounded text-xs font-medium hover:bg-gray-50 transition-colors"
+                            aria-label="Ignore Issue"
                           >
                             Ignore
                           </button>
@@ -648,7 +686,7 @@ Guideline: ${i.guidelineRef}
                 <h3 className="font-semibold text-pw-text flex items-center gap-2">
                   <History size={18} /> History
                 </h3>
-                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded">
+                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded" aria-label="Close History">
                   <X size={18} />
                 </button>
               </div>
@@ -668,6 +706,7 @@ Guideline: ${i.guidelineRef}
                            <button 
                              onClick={(e) => handleDeleteHistory(e, item.id)}
                              className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                             aria-label="Delete history item"
                            >
                              <Trash2 size={14} />
                            </button>
@@ -713,7 +752,7 @@ Guideline: ${i.guidelineRef}
                 <h3 className="font-semibold text-pw-text flex items-center gap-2">
                   <HelpCircle size={18} /> Compliance Guidelines
                 </h3>
-                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded">
+                <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-200 rounded" aria-label="Close Help">
                   <X size={18} />
                 </button>
               </div>
@@ -751,7 +790,7 @@ Guideline: ${i.guidelineRef}
                    <h2 className="text-xl font-bold text-pw-text flex items-center gap-2">
                      <SettingsIcon size={24} className="text-pw-blue" /> Settings
                    </h2>
-                   <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-100 rounded-full">
+                   <button onClick={() => setActivePanel(null)} className="p-1 hover:bg-gray-100 rounded-full" aria-label="Close Settings">
                      <X size={20} />
                    </button>
                  </div>
