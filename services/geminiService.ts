@@ -141,7 +141,7 @@ export class GeminiService {
                      systemInstruction: SYSTEM_PROMPT,
                      responseMimeType: "application/json",
                      temperature: 1, // Increased to 1 as requested
-                     thinkingConfig: { thinkingBudget: 1024 } // Enabled thinking with limited budget
+                     thinkingConfig: { thinkingBudget: 8192 } // Increased to 8k for deep analysis
                  }
              });
              
@@ -224,7 +224,7 @@ export class GeminiService {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
             temperature: 1, // Increased to 1 as requested
-            thinkingConfig: { thinkingBudget: 1024 } // Enabled thinking with limited budget
+            thinkingConfig: { thinkingBudget: 8192 } // Increased to 8k for deep analysis
           }
         });
 

@@ -470,10 +470,11 @@ Guideline: ${i.guidelineRef}
             <h2 className="text-sm font-semibold text-pw-text">Analyzed Content</h2>
             
             <div className="flex items-center gap-3">
-              <div className="hidden xl:flex gap-3 text-xs pr-3 border-r border-gray-200">
-                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500"></span> Critical</div>
-                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Warning</div>
-                <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-500"></span> Tip</div>
+              {/* RESTORED AND ENHANCED VISIBILITY OF LEGEND */}
+              <div className="hidden md:flex gap-4 text-xs pr-4 border-r border-gray-200 mr-2">
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-sm"></span> Critical</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm"></span> Warning</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-sm"></span> Tip</div>
               </div>
 
               <div className="flex items-center gap-2">
