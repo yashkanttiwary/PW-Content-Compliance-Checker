@@ -6,6 +6,7 @@ import { AnalysisResult, Issue, Severity } from "../types";
 
 export class GeminiService {
   private ai: GoogleGenAI | null = null;
+  private readonly CHUNK_SIZE = 100000; // Increased to 100k chars for fewer requests (Flash context is large)
 
   constructor(apiKey: string) {
     if (apiKey) {
@@ -34,76 +35,336 @@ export class GeminiService {
   async analyzeContent(
     content: string, 
     contentType: string,
-    onStatusUpdate?: (status: string) => void
+    onStatusUpdate?: (status: string) => void,
+    onPartialResult?: (result: AnalysisResult) => void
   ): Promise<AnalysisResult> {
     if (!this.ai) throw new Error("API Key not configured");
 
+    const analysisTimestamp = Date.now();
+
+    // Decision: Stream (Small) vs Parallel (Large)
+    // Flash models handle large context well, so we default to streaming for better UX 
+    // unless the content is absolutely massive (>100k chars).
+    if (content.length > this.CHUNK_SIZE) {
+        return this.analyzeInParallel(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
+    } else {
+        return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
+    }
+  }
+
+  // --- PARALLEL PROCESSING STRATEGY ---
+  private async analyzeInParallel(
+    content: string,
+    contentType: string,
+    timestamp: number,
+    onStatusUpdate?: (status: string) => void,
+    onPartialResult?: (result: AnalysisResult) => void
+  ): Promise<AnalysisResult> {
+    const chunks = this.splitContent(content);
+    const allIssues: Issue[] = [];
+    let completedChunks = 0;
+
+    if (onStatusUpdate) onStatusUpdate(`Analyzing ${chunks.length} segments in parallel...`);
+
+    const promises = chunks.map(async (chunk, index) => {
+        try {
+            // Process chunk independently
+            const chunkResult = await this.analyzeSingleChunk(chunk.text, contentType);
+            
+            // Adjust indices to match original full content
+            const adjustedIssues = chunkResult.issues.map(issue => {
+                const globalStart = (issue.startIndex || 0) + chunk.offset;
+                const globalEnd = (issue.endIndex || 0) + chunk.offset;
+                return {
+                    ...issue,
+                    id: `issue-${timestamp}-${index}-${issue.id.split('-').pop()}`, // Ensure unique ID
+                    startIndex: globalStart,
+                    endIndex: globalEnd,
+                    line: this.calculateLineNumber(content, globalStart) // Recalculate line based on full text
+                };
+            });
+
+            // Add to global list (Thread-safe in JS event loop)
+            allIssues.push(...adjustedIssues);
+            completedChunks++;
+
+            // Emit progress
+            if (onStatusUpdate) {
+                onStatusUpdate(`Analyzed part ${completedChunks}/${chunks.length}...`);
+            }
+
+            // Emit partial results
+            if (onPartialResult) {
+                const currentSummary = this.calculateSummary(allIssues);
+                const currentClean = this.generateCleanContent(content, allIssues);
+                onPartialResult({
+                    issues: this.sortIssues(allIssues),
+                    summary: currentSummary,
+                    cleanContent: currentClean,
+                    timestamp: new Date(timestamp).toISOString()
+                });
+            }
+
+        } catch (e) {
+            console.error(`Chunk ${index} failed`, e);
+            // We continue even if one chunk fails, to return partial results
+        }
+    });
+
+    await Promise.all(promises);
+
+    const summary = this.calculateSummary(allIssues);
+    const cleanContent = this.generateCleanContent(content, allIssues);
+
+    return {
+        issues: this.sortIssues(allIssues),
+        summary,
+        cleanContent,
+        timestamp: new Date(timestamp).toISOString()
+    };
+  }
+
+  // Helper: Analyze a single chunk (Non-streaming for simplicity in parallel mode)
+  private async analyzeSingleChunk(chunkText: string, contentType: string): Promise<{ issues: Issue[] }> {
+     if (!this.ai) throw new Error("No API Key");
+     const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT SEGMENT:\n${chunkText}`;
+     
+     // Retry logic specific to chunk
+     let attempts = 0;
+     while (attempts < 3) {
+         try {
+             attempts++;
+             const response = await this.ai.models.generateContent({
+                 model: GEMINI_MODEL,
+                 contents: prompt,
+                 config: {
+                     systemInstruction: SYSTEM_PROMPT,
+                     responseMimeType: "application/json",
+                     temperature: 1, // Increased to 1 as requested
+                     thinkingConfig: { thinkingBudget: 1024 } // Enabled thinking with limited budget
+                 }
+             });
+             
+             const text = response.text || '';
+             let parsed: any = {};
+             
+             try {
+                parsed = JSON.parse(text);
+             } catch (e) {
+                // Fallback for markdown code blocks if strictly necessary
+                const jsonClean = text.replace(/```json\n?|\n?```/g, '').trim();
+                parsed = JSON.parse(jsonClean);
+             }
+             
+             // Process raw issues relative to CHUNK text
+             const processed = this.processRawIssues(parsed.issues || [], chunkText, Date.now());
+             return { issues: processed.issues };
+
+         } catch (e: any) {
+             const isRateLimit = e.message?.includes('429') || e.status === 429 || e.status === 503;
+             if (isRateLimit && attempts < 3) {
+                 const delay = Math.pow(2, attempts) * 1000 + Math.random() * 500;
+                 await new Promise(r => setTimeout(r, delay));
+                 continue;
+             }
+             throw e;
+         }
+     }
+     return { issues: [] };
+  }
+
+  private splitContent(content: string): { text: string; offset: number }[] {
+    const chunks = [];
+    let currentOffset = 0;
+    
+    // Split by double newline to preserve paragraphs
+    const paragraphs = content.split(/(\n\n+)/);
+    
+    let currentChunk = '';
+
+    for (const part of paragraphs) {
+        // If adding this part exceeds size AND we have content, push current chunk
+        if ((currentChunk.length + part.length) > this.CHUNK_SIZE && currentChunk.length > 0) {
+            chunks.push({ text: currentChunk, offset: currentOffset });
+            currentOffset += currentChunk.length;
+            currentChunk = '';
+        }
+        currentChunk += part;
+    }
+    // Push remaining
+    if (currentChunk.length > 0) {
+        chunks.push({ text: currentChunk, offset: currentOffset });
+    }
+    
+    return chunks;
+  }
+
+  // --- STREAMING STRATEGY (Updated for Robust Partial Parsing) ---
+  private async analyzeStream(
+    content: string, 
+    contentType: string,
+    timestamp: number,
+    onStatusUpdate?: (status: string) => void,
+    onPartialResult?: (result: AnalysisResult) => void
+  ): Promise<AnalysisResult> {
     const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content}`;
-
     let attempts = 0;
-    const maxAttempts = 3;
     let fullTextResponse = '';
+    let lastEmittedIssueCount = 0;
 
-    while (attempts < maxAttempts) {
+    while (attempts < 3) {
       try {
         attempts++;
-        if (onStatusUpdate && attempts > 1) {
-            onStatusUpdate(`Retrying attempt ${attempts}...`);
-        }
+        if (onStatusUpdate && attempts > 1) onStatusUpdate(`Retrying attempt ${attempts}...`);
 
-        const streamResult = await this.ai.models.generateContentStream({
+        const streamResult = await this.ai!.models.generateContentStream({
           model: GEMINI_MODEL,
           contents: prompt,
           config: {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
-            temperature: 0.2,
+            temperature: 1, // Increased to 1 as requested
+            thinkingConfig: { thinkingBudget: 1024 } // Enabled thinking with limited budget
           }
         });
 
         let isFirstChunk = true;
         for await (const chunk of streamResult) {
             if (isFirstChunk) {
-                if (onStatusUpdate) onStatusUpdate("Receiving analysis...");
+                if (onStatusUpdate) onStatusUpdate("Analyzing...");
                 isFirstChunk = false;
             }
-            fullTextResponse += chunk.text || '';
-        }
-        
-        if (fullTextResponse) break;
+            
+            const chunkText = chunk.text || '';
+            fullTextResponse += chunkText;
 
-      } catch (e: any) {
-        // Check for Rate Limit (429) or Service Unavailable (503)
-        const isRateLimit = e.message?.includes('429') || e.status === 429 || e.status === 503;
-        
-        if (isRateLimit && attempts < maxAttempts) {
-          // Exponential backoff: 1s, 2s, 4s...
-          const delayMs = Math.pow(2, attempts - 1) * 1000;
-          
-          if (onStatusUpdate) {
-             onStatusUpdate(`Rate limited. Retrying in ${delayMs/1000}s...`);
-          }
-          
-          console.warn(`Rate limited. Retrying in ${delayMs}ms... (Attempt ${attempts}/${maxAttempts})`);
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-          continue;
+            // Real-time Partial Parsing
+            // We only trigger an update if we find *more* issues than before.
+            const partialRawIssues = this.extractIssuesFromStream(fullTextResponse);
+            
+            if (partialRawIssues.length > lastEmittedIssueCount) {
+                 lastEmittedIssueCount = partialRawIssues.length;
+                 const partialResult = this.processRawIssues(partialRawIssues, content, timestamp);
+                 if (onPartialResult) onPartialResult(partialResult);
+            }
         }
-        
-        // If not retryable or max attempts reached
-        throw e;
+        break; // Success
+      } catch (e: any) {
+         console.error("Stream Error", e);
+         const isRateLimit = e.message?.includes('429') || e.status === 429 || e.status === 503;
+         if (isRateLimit && attempts < 3) {
+             const delay = Math.pow(2, attempts) * 1000;
+             await new Promise(r => setTimeout(r, delay));
+             continue;
+         }
+         throw e;
       }
     }
 
-    if (!fullTextResponse) throw new Error("No response from AI after retries");
+    if (!fullTextResponse) throw new Error("No response from AI");
 
+    // Final Parse to ensure completeness
+    let rawIssues: any[] = [];
     try {
-      const parsed = JSON.parse(fullTextResponse);
+        // Try standard parse first
+        const parsed = JSON.parse(fullTextResponse);
+        rawIssues = parsed.issues || [];
+    } catch (e) {
+        // Fallback to our robust parser
+        rawIssues = this.extractIssuesFromStream(fullTextResponse);
+    }
+
+    return this.processRawIssues(rawIssues, content, timestamp);
+  }
+
+  // --- SHARED HELPERS ---
+
+  /**
+   * Robustly extracts JSON objects from a potentially incomplete stream.
+   * Looks for the "issues": [ pattern and extracts complete objects inside it.
+   */
+  private extractIssuesFromStream(text: string): any[] {
+    const marker = '"issues"';
+    const markerIndex = text.indexOf(marker);
+    if (markerIndex === -1) return [];
+
+    const arrayStartIndex = text.indexOf('[', markerIndex);
+    if (arrayStartIndex === -1) return [];
+
+    const objects: any[] = [];
+    let braceCount = 0;
+    let startIndex = -1;
+    let inString = false;
+    let isEscaped = false;
+
+    // Start scanning after the opening [
+    for (let i = arrayStartIndex + 1; i < text.length; i++) {
+      const char = text[i];
       
+      // Handle Escape Sequences
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        isEscaped = true;
+        continue;
+      }
+
+      // Handle Strings (ignore braces inside strings)
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '{') {
+          if (braceCount === 0) startIndex = i; // Found start of a potential issue object
+          braceCount++;
+        } else if (char === '}') {
+          braceCount--;
+          if (braceCount === 0 && startIndex !== -1) {
+            // Found end of an issue object
+            const jsonStr = text.substring(startIndex, i + 1);
+            try {
+              const obj = JSON.parse(jsonStr);
+              // Simple validation to ensure it's not junk
+              if (obj && typeof obj === 'object') {
+                  objects.push(obj);
+              }
+            } catch (e) {
+              // Ignore incomplete or malformed objects in the stream buffer
+            }
+            startIndex = -1;
+          }
+        } else if (char === ']' && braceCount === 0) {
+            // End of issues array
+            break;
+        }
+      }
+    }
+    
+    return objects;
+  }
+
+  private sortIssues(issues: Issue[]): Issue[] {
+      return issues.sort((a, b) => (a.startIndex || 0) - (b.startIndex || 0));
+  }
+
+  private calculateSummary(issues: Issue[]) {
+      return {
+        critical: issues.filter(i => i.severity === Severity.CRITICAL).length,
+        warning: issues.filter(i => i.severity === Severity.WARNING).length,
+        suggestion: issues.filter(i => i.severity === Severity.SUGGESTION).length,
+        total: issues.length
+      };
+  }
+
+  private processRawIssues(rawIssues: any[], content: string, timestamp: number): AnalysisResult {
       const issues: Issue[] = [];
       const usedIndices = new Set<number>();
       
-      // Process issues to find unique non-overlapping occurrences
-      (parsed.issues || []).forEach((issue: any, index: number) => {
+      rawIssues.forEach((issue: any, index: number) => {
         const searchPhrase = issue.originalText;
         if (!searchPhrase) return;
 
@@ -111,20 +372,15 @@ export class GeminiService {
         let matchLen = 0;
         let pos = 0;
         
-        // Find the first occurrence that doesn't overlap with existing issues
         while (pos < content.length) {
             const match = this.findMatch(content, searchPhrase, pos);
             if (!match) break;
             
             const { index: found, length } = match;
-            
             let collision = false;
-            // Check if any character in this range is already 'claimed'
+            // Check for collision with previously found issues
             for (let i = found; i < found + length; i++) {
-                if (usedIndices.has(i)) {
-                    collision = true;
-                    break;
-                }
+                if (usedIndices.has(i)) { collision = true; break; }
             }
             
             if (!collision) {
@@ -132,19 +388,15 @@ export class GeminiService {
                 matchLen = length;
                 break;
             }
-            // Move past this occurrence
+            // If collision, keep searching forward
             pos = found + 1;
         }
 
         if (start !== -1) {
-            // Mark these indices as used
-            for (let i = start; i < start + matchLen; i++) {
-                usedIndices.add(i);
-            }
-            
+            for (let i = start; i < start + matchLen; i++) usedIndices.add(i);
             issues.push({
                 ...issue,
-                id: `issue-${Date.now()}-${index}`,
+                id: `issue-${timestamp}-${index}`,
                 line: this.calculateLineNumber(content, start),
                 status: 'pending',
                 startIndex: start,
@@ -153,106 +405,51 @@ export class GeminiService {
         }
       });
 
-      // Calculate summary
-      const summary = {
-        critical: issues.filter((i: Issue) => i.severity === Severity.CRITICAL).length,
-        warning: issues.filter((i: Issue) => i.severity === Severity.WARNING).length,
-        suggestion: issues.filter((i: Issue) => i.severity === Severity.SUGGESTION).length,
-        total: issues.length
-      };
-
-      // Generate Clean Content Client-Side
-      const cleanContent = this.generateCleanContent(content, issues);
-
       return {
         issues,
-        summary,
-        cleanContent,
-        timestamp: new Date().toISOString()
+        summary: this.calculateSummary(issues),
+        cleanContent: this.generateCleanContent(content, issues),
+        timestamp: new Date(timestamp).toISOString()
       };
-
-    } catch (e) {
-      console.error("Failed to parse AI response", e);
-      throw new Error("Analysis failed due to invalid response format.");
-    }
   }
 
   private generateCleanContent(originalContent: string, issues: Issue[]): string {
-    // Sort issues by start index to process sequentially
-    // Filter out issues that were not found in text (no startIndex)
-    const sortedIssues = [...issues]
-      .filter(i => typeof i.startIndex === 'number')
-      .sort((a, b) => (a.startIndex || 0) - (b.startIndex || 0));
-
+    const sortedIssues = this.sortIssues([...issues].filter(i => typeof i.startIndex === 'number'));
     let result = '';
     let lastIndex = 0;
 
     sortedIssues.forEach(issue => {
-      // Safety check: ensure we don't go backwards
       if ((issue.startIndex || 0) < lastIndex) return;
-
-      // Append text from last end to current start
       result += originalContent.slice(lastIndex, issue.startIndex);
-
-      // Append the suggestion instead of original text
       result += issue.suggestion;
-
-      // Update last index
       lastIndex = issue.endIndex || 0;
     });
-
-    // Append remaining text
     result += originalContent.slice(lastIndex);
-
     return result;
   }
 
   private findMatch(content: string, searchPhrase: string, startFrom: number): { index: number, length: number } | null {
     const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // 1. Try Whole Word Match first (Best for accuracy - Fix H-02)
-    // This avoids matching "best" inside "asbestos" by checking word boundaries
     try {
       const escaped = escapeRegExp(searchPhrase);
-      // \b matches word boundaries (start/end of string, space, punctuation, etc.)
       const wordRegex = new RegExp(`\\b${escaped}\\b`, 'g');
       wordRegex.lastIndex = startFrom;
       const wordMatch = wordRegex.exec(content);
-      
-      if (wordMatch) {
-         return { index: wordMatch.index, length: wordMatch[0].length };
-      }
-    } catch (e) {
-      // Ignore regex errors, fallback to standard search
-    }
+      if (wordMatch) return { index: wordMatch.index, length: wordMatch[0].length };
+    } catch (e) { }
 
-    // 2. Exact match (Fallback if whole word not found)
     const exactIndex = content.indexOf(searchPhrase, startFrom);
-    if (exactIndex !== -1) {
-      return { index: exactIndex, length: searchPhrase.length };
-    }
+    if (exactIndex !== -1) return { index: exactIndex, length: searchPhrase.length };
 
-    // 3. Flexible Whitespace Match
-    // Handles cases where AI normalizes multiple spaces or newlines to single spaces
     try {
-      // Split search phrase into words, filtering out empty strings
       const parts = searchPhrase.split(/\s+/).filter(p => p.length > 0);
       if (parts.length === 0) return null;
-
-      // Escape special regex characters in each part
       const pattern = parts.map(escapeRegExp).join('[\\s\\r\\n]+');
-      
       const regex = new RegExp(pattern, 'g');
       regex.lastIndex = startFrom;
-      
       const match = regex.exec(content);
-      if (match) {
-        return { index: match.index, length: match[0].length };
-      }
-    } catch (e) {
-      // If regex fails (rare), return null
-      return null;
-    }
+      if (match) return { index: match.index, length: match[0].length };
+    } catch (e) { return null; }
 
     return null;
   }

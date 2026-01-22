@@ -42,17 +42,21 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
 
   const handleAnalyze = async () => {
     if (!content.trim()) return;
+    
+    // COMPLETE RESET of analysis state to ensure fresh start
     setIsAnalyzing(true);
     setStatusText("Initializing...");
-    setResult(null);
-    setErrorMsg(null);
-    setAnalyzedContent(content);
+    setResult(null);             // Clear previous AI response
+    setActiveIssueId(undefined); // Clear active issue selection
+    setErrorMsg(null);           // Clear any previous errors
+    setAnalyzedContent(content); // Reset analyzed content to match input (discarding previous fixes)
     
     try {
       const data = await geminiService.analyzeContent(
         content, 
         contentType,
-        (status) => setStatusText(status)
+        (status) => setStatusText(status),
+        (partialData) => setResult(partialData) // STREAMING: Update state as data arrives
       );
       setResult(data);
       
@@ -92,6 +96,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setContentType(item.contentType);
     setActivePanel(null);
     setErrorMsg(null);
+    setActiveIssueId(undefined);
     setMobileTab('analysis');
   };
 
