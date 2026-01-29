@@ -106,7 +106,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       // If we got clean content back (or extracted text was used to generate it), update the view
       if (uploadedFile) {
         // Use extracted text as the "Analyzed Content" base
-        setAnalyzedContent(data.cleanContent || "(No text text detected in document)");
+        setAnalyzedContent(data.cleanContent || "(No text detected in document)");
       } else {
          setAnalyzedContent(data.cleanContent || content);
       }
@@ -314,7 +314,7 @@ Total Issues: ${result.summary.total}
 
 ## Issues Found
 ${result.issues.map((i: Issue) => `
-### Line ${i.line}: ${i.category} [${i.severity}]
+### ${i.page ? `Page ${i.page}` : `Line ${i.line}`}: ${i.category} [${i.severity}]
 Original: "${i.originalText}"
 Suggestion: "${i.suggestion}"
 Reason: ${i.explanation}
@@ -796,7 +796,9 @@ Guideline: ${i.guidelineRef}
                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors.badge}`}>
                          {issue.severity}
                        </span>
-                       <span className="text-xs text-pw-muted">Line {issue.line}</span>
+                       <span className="text-xs text-pw-muted">
+                        {issue.page ? `Page ${issue.page}` : `Line ${issue.line}`}
+                       </span>
                     </div>
                   </div>
                   

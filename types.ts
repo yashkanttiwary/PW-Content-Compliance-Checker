@@ -33,6 +33,7 @@ export interface Issue {
   status: 'pending' | 'fixed' | 'ignored';
   startIndex?: number; // Calculated client-side
   endIndex?: number;   // Calculated client-side
+  page?: number;       // Optional: Page number if analyzing a document
 }
 
 export interface AnalysisResult {

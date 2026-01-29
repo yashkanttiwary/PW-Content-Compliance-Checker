@@ -218,7 +218,16 @@ export class GeminiService {
     // If it's a file, we ask the model to also output the extracted text so we can highlight it.
     let instructionAddition = "";
     if (fileData) {
-        instructionAddition = "\n\nIMPORTANT: Since you are analyzing a file (image/PDF), please also include a field 'extractedText' in your JSON response containing the full text content you analyzed, so we can display it to the user. Ensure the 'extractedText' exactly matches the visible text.";
+        instructionAddition = `
+        
+IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
+1. You MUST extract the text content from the provided file.
+2. Include a field 'extractedText' in the root JSON response containing this text.
+   - **CRITICAL**: You MUST preserve the original visual layout, line breaks, and paragraph structure. 
+   - Insert newline characters (\\n) exactly where line breaks occur in the document.
+   - DO NOT flatten the text into a single line.
+3. In each 'issue' object, ADD a 'page' field (integer) indicating the page number where the issue occurs.
+`;
     }
 
     const promptText = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content || "(See attached file)"}${instructionAddition}`;

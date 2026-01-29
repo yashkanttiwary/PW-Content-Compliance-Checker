@@ -70,6 +70,9 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
 
   // Generate line numbers
   const lines = content.split('\n').length;
+  // Fallback: If AI returns everything in one huge line (>500 chars), we force wrap 
+  // to avoid horizontal scroll nightmare, even though line numbers will be "1"
+  const isSingleLineHuge = lines === 1 && content.length > 500;
 
   return (
     <div 
@@ -84,7 +87,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ content, issues, onIssueC
       </div>
 
       {/* Content */}
-      <div className="flex-1 p-4 whitespace-pre min-w-max">
+      <div className={`flex-1 p-4 ${isSingleLineHuge ? 'whitespace-pre-wrap break-words' : 'whitespace-pre min-w-max'}`}>
         {segments.map((segment, idx) => {
           if (!segment.issue) return <span key={idx}>{segment.text}</span>;
 
