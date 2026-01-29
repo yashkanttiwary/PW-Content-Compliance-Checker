@@ -36,15 +36,20 @@ export class GeminiService {
     content: string, 
     contentType: string,
     onStatusUpdate?: (status: string) => void,
-    onPartialResult?: (result: AnalysisResult) => void
+    onPartialResult?: (result: AnalysisResult) => void,
+    fileData?: { mimeType: string; data: string } // NEW: Support for multimodal input
   ): Promise<AnalysisResult> {
     if (!this.ai) throw new Error("API Key not configured");
 
     const analysisTimestamp = Date.now();
 
-    // Decision: Stream (Small) vs Parallel (Large)
-    // Flash models handle large context well, so we default to streaming for better UX 
-    // unless the content is absolutely massive (>100k chars).
+    // Decision: If file data is present, we CANNOT chunk easily. 
+    // We strictly use the streaming strategy with the file as a part.
+    if (fileData) {
+        return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, fileData);
+    }
+
+    // Text-only strategy
     if (content.length > this.CHUNK_SIZE) {
         return this.analyzeInParallel(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
     } else {
@@ -52,7 +57,7 @@ export class GeminiService {
     }
   }
 
-  // --- PARALLEL PROCESSING STRATEGY ---
+  // --- PARALLEL PROCESSING STRATEGY (Text Only) ---
   private async analyzeInParallel(
     content: string,
     contentType: string,
@@ -199,15 +204,35 @@ export class GeminiService {
     return chunks;
   }
 
-  // --- STREAMING STRATEGY (Updated for Robust Partial Parsing) ---
+  // --- STREAMING STRATEGY (Updated for Robust Partial Parsing & Multimodal) ---
   private async analyzeStream(
     content: string, 
     contentType: string,
     timestamp: number,
     onStatusUpdate?: (status: string) => void,
-    onPartialResult?: (result: AnalysisResult) => void
+    onPartialResult?: (result: AnalysisResult) => void,
+    fileData?: { mimeType: string; data: string }
   ): Promise<AnalysisResult> {
-    const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content}`;
+    
+    // Construct the parts. If fileData exists, add it.
+    // If it's a file, we ask the model to also output the extracted text so we can highlight it.
+    let instructionAddition = "";
+    if (fileData) {
+        instructionAddition = "\n\nIMPORTANT: Since you are analyzing a file (image/PDF), please also include a field 'extractedText' in your JSON response containing the full text content you analyzed, so we can display it to the user. Ensure the 'extractedText' exactly matches the visible text.";
+    }
+
+    const promptText = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content || "(See attached file)"}${instructionAddition}`;
+    
+    const parts: any[] = [{ text: promptText }];
+    if (fileData) {
+        parts.unshift({
+            inlineData: {
+                mimeType: fileData.mimeType,
+                data: fileData.data
+            }
+        });
+    }
+
     let attempts = 0;
     let fullTextResponse = '';
     let lastEmittedIssueCount = 0;
@@ -219,7 +244,7 @@ export class GeminiService {
 
         const streamResult = await this.ai!.models.generateContentStream({
           model: GEMINI_MODEL,
-          contents: prompt,
+          contents: { parts }, // Use 'parts' structure for multimodal
           config: {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
@@ -244,6 +269,8 @@ export class GeminiService {
             
             if (partialRawIssues.length > lastEmittedIssueCount) {
                  lastEmittedIssueCount = partialRawIssues.length;
+                 // Note: For files, 'content' might be empty initially. We might need extracted text.
+                 // For partial results during file analysis, highlighting might be off until we get full text.
                  const partialResult = this.processRawIssues(partialRawIssues, content, timestamp);
                  if (onPartialResult) onPartialResult(partialResult);
             }
@@ -265,16 +292,24 @@ export class GeminiService {
 
     // Final Parse to ensure completeness
     let rawIssues: any[] = [];
+    let extractedText = '';
+
     try {
         // Try standard parse first
         const parsed = JSON.parse(fullTextResponse);
         rawIssues = parsed.issues || [];
+        if (parsed.extractedText) {
+            extractedText = parsed.extractedText;
+        }
     } catch (e) {
         // Fallback to our robust parser
         rawIssues = this.extractIssuesFromStream(fullTextResponse);
     }
 
-    return this.processRawIssues(rawIssues, content, timestamp);
+    // If we have extracted text from the file (PDF/Image), we use THAT as the content source for highlighting
+    const contentToUse = extractedText || content;
+
+    return this.processRawIssues(rawIssues, contentToUse, timestamp);
   }
 
   // --- SHARED HELPERS ---

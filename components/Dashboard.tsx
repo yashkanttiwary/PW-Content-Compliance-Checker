@@ -1,10 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { 
   Play, FileText, Upload, Copy, Download, 
   ChevronDown, X, Check, Info,
   History, Settings as SettingsIcon, HelpCircle, Loader, FileType,
   Trash2, RotateCcw, Shield, User, LogOut, ExternalLink, AlertTriangle,
-  Layout, List, Edit3
+  Layout, List, Edit3, Image as ImageIcon, Eye
 } from 'lucide-react';
 import { AppState, ContentType, HistoryItem, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
@@ -20,6 +20,28 @@ interface DashboardProps {
   onUpdateAppState: (newState: AppState) => void;
 }
 
+interface UploadedFile {
+  name: string;
+  type: string;
+  data: string; // base64
+}
+
+const base64ToBlobUrl = (base64: string, mimeType: string) => {
+  try {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: mimeType });
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    console.error("Blob conversion failed", e);
+    return '';
+  }
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppState }) => {
   const [content, setContent] = useState('');
   const [analyzedContent, setAnalyzedContent] = useState('');
@@ -32,16 +54,25 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
-  
+  const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
+  const [viewMode, setViewMode] = useState<'analysis' | 'original'>('analysis');
+
   // New UI State
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
   const [mobileTab, setMobileTab] = useState<'input' | 'analysis' | 'issues'>('input');
 
   // Check if content matches analyzed content (for Sync Warning M-02)
-  const isDirty = result && content !== analyzedContent;
+  // Only applicable if NOT using a binary file
+  const isDirty = result && !uploadedFile && content !== analyzedContent;
+
+  // Memoize blob URL for file preview to avoid re-creation on render
+  const filePreviewUrl = useMemo(() => {
+    if (!uploadedFile) return '';
+    return base64ToBlobUrl(uploadedFile.data, uploadedFile.type);
+  }, [uploadedFile]);
 
   const handleAnalyze = async () => {
-    if (!content.trim()) return;
+    if (!content.trim() && !uploadedFile) return;
     
     // COMPLETE RESET of analysis state to ensure fresh start
     setIsAnalyzing(true);
@@ -49,17 +80,37 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setResult(null);             // Clear previous AI response
     setActiveIssueId(undefined); // Clear active issue selection
     setErrorMsg(null);           // Clear any previous errors
-    setAnalyzedContent(content); // Reset analyzed content to match input (discarding previous fixes)
+    setViewMode('analysis');     // Force switch to analysis view
+    
+    // If file is uploaded, we don't set analyzedContent yet; we wait for extraction.
+    // If text only, we reset analyzedContent to match input.
+    if (!uploadedFile) {
+        setAnalyzedContent(content); 
+    } else {
+        setAnalyzedContent("Analyzing document layout and content...");
+    }
     
     try {
       const data = await geminiService.analyzeContent(
         content, 
         contentType,
         (status) => setStatusText(status),
-        (partialData) => setResult(partialData) // STREAMING: Update state as data arrives
+        (partialData) => {
+            setResult(partialData);
+        },
+        uploadedFile ? { mimeType: uploadedFile.type, data: uploadedFile.data } : undefined
       );
+      
       setResult(data);
       
+      // If we got clean content back (or extracted text was used to generate it), update the view
+      if (uploadedFile) {
+        // Use extracted text as the "Analyzed Content" base
+        setAnalyzedContent(data.cleanContent || "(No text text detected in document)");
+      } else {
+         setAnalyzedContent(data.cleanContent || content);
+      }
+
       // Auto-switch to analysis view on mobile
       setMobileTab('analysis');
       
@@ -68,13 +119,13 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         id: Date.now().toString(),
         date: new Date().toISOString(),
         contentType,
-        snippet: content.substring(0, 80) + (content.length > 80 ? '...' : ''),
+        snippet: uploadedFile ? `File: ${uploadedFile.name}` : (content.substring(0, 80) + (content.length > 80 ? '...' : '')),
         issuesCount: data.summary.total,
         data: {
           ...data,
           cleanContent: data.cleanContent // Ensure clean content is stored
         },
-        originalContent: content
+        originalContent: uploadedFile ? "" : content // Don't store huge base64 in history for now
       };
 
       const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 20); // Reduced from 50 to 20
@@ -83,6 +134,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     } catch (error) {
       setErrorMsg("Analysis failed. Please check your connection or API key.");
       console.error(error);
+      if (uploadedFile) setAnalyzedContent(""); 
     } finally {
       setIsAnalyzing(false);
       setStatusText(null);
@@ -91,13 +143,15 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
 
   const handleRestoreHistory = (item: HistoryItem) => {
     setContent(item.originalContent);
-    setAnalyzedContent(item.originalContent);
+    setAnalyzedContent(item.data.cleanContent || item.originalContent); // Restore the text view
     setResult(item.data);
     setContentType(item.contentType);
     setActivePanel(null);
     setErrorMsg(null);
     setActiveIssueId(undefined);
+    setUploadedFile(null); // History currently doesn't restore binary files
     setMobileTab('analysis');
+    setViewMode('analysis');
   };
 
   const handleDeleteHistory = (e: React.MouseEvent, id: string) => {
@@ -114,20 +168,48 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
 
   const handleClear = () => {
     setContent('');
+    setUploadedFile(null);
     setAnalyzedContent('');
     setResult(null);
     setActiveIssueId(undefined);
     setErrorMsg(null);
+    setViewMode('analysis');
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      setContent(ev.target?.result as string);
-    };
-    reader.readAsText(file);
+
+    // Check file type
+    const isImage = file.type.startsWith('image/');
+    const isPDF = file.type === 'application/pdf';
+    const isText = file.type === 'text/plain' || file.name.endsWith('.md') || file.name.endsWith('.txt');
+
+    if (isText) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setContent(ev.target?.result as string);
+          setUploadedFile(null);
+        };
+        reader.readAsText(file);
+    } else if (isImage || isPDF) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const result = ev.target?.result as string;
+            // Extract base64 part
+            const base64Data = result.split(',')[1];
+            setUploadedFile({
+                name: file.name,
+                type: file.type,
+                data: base64Data
+            });
+            setContent(''); // Clear text input when file is active
+        };
+        reader.readAsDataURL(file);
+    } else {
+        setErrorMsg("Unsupported file type. Please upload Image, PDF, or Text.");
+    }
   };
 
   const handleApplyFix = (issue: Issue) => {
@@ -152,7 +234,6 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       const targetText = analyzedContent.slice(currentIssue.startIndex, currentIssue.endIndex);
       if (targetText !== currentIssue.originalText) {
         setErrorMsg(`Sync error: The content has changed or shifted. Expected "${currentIssue.originalText}" but found "${targetText}". Please re-analyze.`);
-        // Mark as broken/ignored so user doesn't try again
         return {
           ...prevResult,
           issues: prevResult.issues.map((i: Issue) => 
@@ -170,7 +251,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       
       // Update Content State
       setAnalyzedContent(newContent);
-      setContent(newContent); // Sync source to match applied fix
+      if (!uploadedFile) setContent(newContent); // Only sync back to input if it was text input
       setErrorMsg(null); // Clear errors on success
 
       // Calculate length difference to shift subsequent issues
@@ -308,7 +389,6 @@ Guideline: ${i.guidelineRef}
       <header className="h-14 bg-white border-b border-pw-border flex items-center justify-between px-4 shrink-0 z-20">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-pw-blue text-white rounded flex items-center justify-center font-bold">PW</div>
-          {/* Fix M-03: Ensure title space is reserved/visible on mobile */}
           <h1 className="font-semibold text-pw-text text-sm md:text-base">Compliance Checker</h1>
         </div>
         
@@ -393,45 +473,81 @@ Guideline: ${i.guidelineRef}
             </div>
           </div>
           
-          <div className="flex-1 relative">
-            <textarea
-              className="w-full h-full p-4 resize-none outline-none font-mono text-sm leading-relaxed whitespace-pre overflow-auto"
-              placeholder="Paste your content here..."
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              aria-label="Input Content"
-            />
-            <div className="absolute bottom-4 right-4 flex gap-2">
-               <button 
-                 onClick={handleClear}
-                 className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-error hover:border-pw-error transition-colors"
-                 title="Clear"
-                 aria-label="Clear content"
-               >
-                 <X size={16} />
-               </button>
-               <input 
+          <div className="flex-1 relative flex flex-col">
+            {uploadedFile ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-200 rounded-lg bg-gray-50/50 m-4 transition-all">
+                    <div className="w-16 h-16 bg-blue-100 text-pw-blue rounded-full flex items-center justify-center mb-4 shadow-sm">
+                        {uploadedFile.type.includes('pdf') ? <FileText size={32} /> : <ImageIcon size={32} />}
+                    </div>
+                    <h3 className="text-sm font-semibold text-pw-text mb-1 max-w-[200px] truncate" title={uploadedFile.name}>
+                        {uploadedFile.name}
+                    </h3>
+                    <p className="text-xs text-pw-muted mb-6 uppercase tracking-wider font-medium">
+                        {uploadedFile.type.split('/')[1] || 'FILE'}
+                    </p>
+                    <button 
+                        onClick={handleClear}
+                        className="px-6 py-2 bg-white border border-red-200 text-red-500 rounded-md text-sm font-medium hover:bg-red-50 hover:border-red-300 transition-all shadow-sm flex items-center gap-2 group"
+                    >
+                        <Trash2 size={16} className="group-hover:text-red-600" /> Remove File
+                    </button>
+                </div>
+            ) : (
+                <textarea
+                  className="w-full h-full p-4 resize-none outline-none font-mono text-sm leading-relaxed whitespace-pre overflow-auto"
+                  placeholder="Paste your content here or upload a file..."
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  aria-label="Input Content"
+                />
+            )}
+            
+            {!uploadedFile && (
+              <div className="absolute bottom-4 right-4 flex gap-2">
+                 <button 
+                   onClick={handleClear}
+                   className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-error hover:border-pw-error transition-colors"
+                   title="Clear"
+                   aria-label="Clear content"
+                 >
+                   <X size={16} />
+                 </button>
+                 <button 
+                   onClick={() => fileInputRef.current?.click()}
+                   className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-blue hover:border-pw-blue transition-colors"
+                   title="Upload File"
+                   aria-label="Upload File"
+                 >
+                   <Upload size={16} />
+                 </button>
+              </div>
+            )}
+            
+            {/* Hidden Input for upload button triggered from empty state */}
+             <input 
                  type="file" 
                  ref={fileInputRef} 
                  className="hidden" 
-                 accept=".txt,.md" 
+                 accept=".txt,.md,.pdf,image/png,image/jpeg,image/webp" 
                  onChange={handleFileUpload} 
-               />
-               <button 
-                 onClick={() => fileInputRef.current?.click()}
-                 className="p-2 bg-white border border-pw-border shadow-sm rounded-md text-pw-muted hover:text-pw-blue hover:border-pw-blue transition-colors"
-                 title="Upload File"
-                 aria-label="Upload File"
-               >
-                 <Upload size={16} />
-               </button>
-            </div>
+             />
+             
+             {/* If no content and no file, show big upload prompt */}
+             {!content && !uploadedFile && (
+                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <div className="text-center opacity-40 pointer-events-auto cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+                         <Upload size={48} className="mx-auto mb-2" />
+                         <p className="text-sm font-medium">Click to upload file</p>
+                         <p className="text-xs">PDF, Images, TXT supported</p>
+                     </div>
+                 </div>
+             )}
           </div>
 
           <div className="p-4 border-t border-pw-border bg-pw-bg/30">
             <button 
               onClick={handleAnalyze}
-              disabled={!content.trim() || isAnalyzing}
+              disabled={(!content.trim() && !uploadedFile) || isAnalyzing}
               className="w-full py-2.5 bg-pw-blue text-white rounded-md font-medium hover:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
             >
               {isAnalyzing ? (
@@ -447,14 +563,12 @@ Guideline: ${i.guidelineRef}
               )}
             </button>
             <div className="mt-2 text-center text-xs text-pw-muted flex justify-center items-center flex-wrap gap-1">
-              <span>{content.length} characters • {wordCount} words</span>
-              {contentType === ContentType.VIDEO_SCRIPT && wordCount > 0 && (
+              {!uploadedFile ? (
                 <>
-                  <span className="mx-1 hidden sm:inline">•</span>
-                  <span className="text-pw-blue font-medium whitespace-nowrap" title="Estimated based on 150 words per minute">
-                    ~{getReadingTime()} duration
-                  </span>
+                    <span>{content.length} characters • {wordCount} words</span>
                 </>
+              ) : (
+                  <span>Ready to analyze {uploadedFile.type.split('/')[1] || 'file'}</span>
               )}
             </div>
           </div>
@@ -467,7 +581,27 @@ Guideline: ${i.guidelineRef}
         {/* Column 2: Analysis */}
         <div className={`flex-[1.5] flex-col min-w-[320px] bg-pw-bg overflow-hidden relative ${mobileTab === 'analysis' ? 'flex' : 'hidden lg:flex'}`}>
           <div className="p-3 border-b border-pw-border flex justify-between items-center bg-white shadow-sm z-10">
-            <h2 className="text-sm font-semibold text-pw-text">Analyzed Content</h2>
+            <div className="flex items-center gap-4">
+              <h2 className="text-sm font-semibold text-pw-text">Analyzed Content</h2>
+              
+              {/* File Toggle */}
+              {uploadedFile && (
+                <div className="flex bg-gray-100 rounded p-0.5 text-xs font-medium">
+                  <button 
+                    onClick={() => setViewMode('analysis')}
+                    className={`px-3 py-1 rounded-sm transition-all ${viewMode === 'analysis' ? 'bg-white shadow text-pw-blue' : 'text-pw-muted hover:text-pw-text'}`}
+                  >
+                    Analysis View
+                  </button>
+                  <button 
+                    onClick={() => setViewMode('original')}
+                    className={`px-3 py-1 rounded-sm transition-all ${viewMode === 'original' ? 'bg-white shadow text-pw-blue' : 'text-pw-muted hover:text-pw-text'}`}
+                  >
+                    Original File
+                  </button>
+                </div>
+              )}
+            </div>
             
             <div className="flex items-center gap-3">
               {/* RESTORED AND ENHANCED VISIBILITY OF LEGEND */}
@@ -543,16 +677,46 @@ Guideline: ${i.guidelineRef}
                  {errorMsg}
                </div>
              )}
-             <div className="flex-1 relative overflow-hidden">
-                <AnalysisPanel 
-                  content={analyzedContent} 
-                  issues={result?.issues || []} 
-                  onIssueClick={(issue) => {
-                    setActiveIssueId(issue.id);
-                    setMobileTab('issues'); // Jump to details on mobile
-                  }}
-                  activeIssueId={activeIssueId}
-                />
+             
+             <div className="flex-1 relative overflow-hidden bg-white rounded-lg border border-pw-border shadow-sm">
+                {uploadedFile && viewMode === 'original' ? (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-100 overflow-hidden">
+                    {uploadedFile.type === 'application/pdf' ? (
+                      <iframe 
+                        src={`${filePreviewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
+                        className="w-full h-full border-none"
+                        title="PDF Preview"
+                      >
+                         <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4 text-center">
+                            <FileText size={48} className="mb-4 text-gray-400" />
+                            <p className="font-medium mb-2">Browser PDF Preview Not Supported</p>
+                            <p className="text-xs mb-4 max-w-xs">Your browser doesn't support inline PDF viewing.</p>
+                            <a href={filePreviewUrl} download={uploadedFile.name} className="px-4 py-2 bg-pw-blue text-white rounded text-sm hover:bg-blue-700 transition-colors">
+                              Download PDF
+                            </a>
+                         </div>
+                      </iframe>
+                    ) : uploadedFile.type.startsWith('image/') ? (
+                      <img src={filePreviewUrl} alt="Original" className="max-w-full max-h-full object-contain p-4" />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4">
+                        <FileText size={48} className="mb-2" />
+                        <p>Preview not available</p>
+                        <a href={filePreviewUrl} download={uploadedFile.name} className="text-pw-blue underline mt-2 text-sm">Download File</a>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <AnalysisPanel 
+                    content={analyzedContent} 
+                    issues={result?.issues || []} 
+                    onIssueClick={(issue) => {
+                      setActiveIssueId(issue.id);
+                      setMobileTab('issues'); // Jump to details on mobile
+                    }}
+                    activeIssueId={activeIssueId}
+                  />
+                )}
              </div>
           </div>
 
@@ -614,6 +778,7 @@ Guideline: ${i.guidelineRef}
                       e.preventDefault();
                       setActiveIssueId(issue.id);
                       setMobileTab('analysis');
+                      setViewMode('analysis'); // Ensure we see text when clicking an issue
                     }
                   }}
                   className={`
@@ -623,6 +788,7 @@ Guideline: ${i.guidelineRef}
                   onClick={() => {
                     setActiveIssueId(issue.id);
                     setMobileTab('analysis'); // Jump to context on mobile
+                    setViewMode('analysis'); // Ensure we see text when clicking an issue
                   }}
                 >
                   <div className={`px-3 py-2 border-b flex justify-between items-center ${issue.status === 'ignored' ? 'opacity-50' : ''}`}>
