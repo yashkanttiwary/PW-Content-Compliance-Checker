@@ -4,13 +4,14 @@ import {
   ChevronDown, X, Check, Info,
   History, Settings as SettingsIcon, HelpCircle, Loader, FileType,
   Trash2, RotateCcw, Shield, User, LogOut, ExternalLink, AlertTriangle,
-  Layout, List, Edit3, Image as ImageIcon, Eye
+  Layout, List, Edit3, Image as ImageIcon, Eye, Minimize2
 } from 'lucide-react';
 import { AppState, ContentType, HistoryItem, Issue, Severity } from '../types';
 import { GeminiService } from '../services/geminiService';
 import AnalysisPanel from './AnalysisPanel';
 import { CONTENT_TYPE_OPTIONS, SEVERITY_COLORS, GUIDELINE_DETAILS } from '../constants';
 import { jsPDF } from 'jspdf';
+import { compressPDF } from '../services/compressionService';
 
 // Developed by Yash Kant Tiwary (PW26173)
 
@@ -25,6 +26,7 @@ interface UploadedFile {
   type: string;
   data: string | null; // data is null if file is too large for inline/preview
   file?: File; // Store the raw file object for large uploads
+  originalSize?: number; // Track original size if compressed
 }
 
 const base64ToBlobUrl = (base64: string, mimeType: string) => {
@@ -57,6 +59,10 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   const [statusText, setStatusText] = useState<string | null>(null);
   const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
   const [viewMode, setViewMode] = useState<'analysis' | 'original'>('analysis');
+
+  // Compression State
+  const [isCompressing, setIsCompressing] = useState(false);
+  const [compressionStatus, setCompressionStatus] = useState('');
 
   // New UI State
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
@@ -182,21 +188,59 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setActiveIssueId(undefined);
     setErrorMsg(null);
     setViewMode('analysis');
+    setIsCompressing(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Reset UI
+    setUploadedFile(null);
+    setContent('');
+    setErrorMsg(null);
+    setResult(null);
+    setAnalyzedContent('');
+    setIsCompressing(false);
 
     // Check file type
     const isImage = file.type.startsWith('image/');
     const isPDF = file.type === 'application/pdf';
     const isText = file.type === 'text/plain' || file.name.endsWith('.md') || file.name.endsWith('.txt');
 
+    if (!isImage && !isPDF && !isText) {
+        setErrorMsg("Unsupported file type. Please upload Image, PDF, or Text.");
+        return;
+    }
+
+    // Compression Threshold: 5MB
+    const COMPRESSION_THRESHOLD = 5 * 1024 * 1024;
+    let fileToProcess = file;
+    let wasCompressed = false;
+
+    // If PDF > 5MB, attempt compression
+    if (isPDF && file.size > COMPRESSION_THRESHOLD) {
+        setIsCompressing(true);
+        setCompressionStatus("Compressing PDF...");
+        try {
+            const compressedFile = await compressPDF(file, setCompressionStatus);
+            if (compressedFile.size < file.size) {
+                fileToProcess = compressedFile;
+                wasCompressed = true;
+            }
+        } catch (err) {
+            console.warn("Compression skipped or failed, using original file", err);
+            // Non-blocking error, just continue with original
+        } finally {
+            setIsCompressing(false);
+            setCompressionStatus('');
+        }
+    }
+
     // SAFE LIMIT: 4MB for inline preview. Anything larger uses Files API strategy.
     const MAX_INLINE_SIZE = 4 * 1024 * 1024; 
-    const isLargeFile = file.size > MAX_INLINE_SIZE;
+    const isLargeFile = fileToProcess.size > MAX_INLINE_SIZE;
 
     if (isText && !isLargeFile) {
         const reader = new FileReader();
@@ -204,35 +248,34 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
           setContent(ev.target?.result as string);
           setUploadedFile(null);
         };
-        reader.readAsText(file);
+        reader.readAsText(fileToProcess);
     } else if (isImage || isPDF) {
-        // Prevent browser crash: Do NOT read large files into memory (base64)
         if (isLargeFile) {
             setUploadedFile({
-                name: file.name,
-                type: file.type,
+                name: fileToProcess.name,
+                type: fileToProcess.type,
                 data: null, // No preview for large files
-                file: file // Store raw file for Service to handle upload
+                file: fileToProcess, // Store raw file for Service to handle upload
+                originalSize: wasCompressed ? file.size : undefined
             });
             setContent('');
         } else {
-            // Small files: read for preview
+            // Small files (or successfully compressed ones): read for preview
             const reader = new FileReader();
             reader.onload = (ev) => {
                 const result = ev.target?.result as string;
                 const base64Data = result.split(',')[1];
                 setUploadedFile({
-                    name: file.name,
-                    type: file.type,
+                    name: fileToProcess.name,
+                    type: fileToProcess.type,
                     data: base64Data,
-                    file: file
+                    file: fileToProcess,
+                    originalSize: wasCompressed ? file.size : undefined
                 });
                 setContent('');
             };
-            reader.readAsDataURL(file);
+            reader.readAsDataURL(fileToProcess);
         }
-    } else {
-        setErrorMsg("Unsupported file type. Please upload Image, PDF, or Text.");
     }
   };
 
@@ -473,7 +516,14 @@ Guideline: ${i.guidelineRef}
           </div>
           
           <div className="flex-1 relative flex flex-col">
-            {uploadedFile ? (
+            {isCompressing ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 bg-blue-50 m-4 rounded-lg border border-blue-100">
+                <Loader className="animate-spin text-pw-blue mb-3" size={32} />
+                <h3 className="font-semibold text-pw-blue text-sm mb-1">Compressing Large File...</h3>
+                <p className="text-xs text-pw-muted text-center">{compressionStatus}</p>
+                <p className="text-[10px] text-pw-muted mt-2 opacity-70">This happens locally on your device.</p>
+              </div>
+            ) : uploadedFile ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-200 rounded-lg bg-gray-50/50 m-4 transition-all">
                     <div className="w-16 h-16 bg-blue-100 text-pw-blue rounded-full flex items-center justify-center mb-4 shadow-sm">
                         {uploadedFile.type.includes('pdf') ? <FileText size={32} /> : <ImageIcon size={32} />}
@@ -481,12 +531,22 @@ Guideline: ${i.guidelineRef}
                     <h3 className="text-sm font-semibold text-pw-text mb-1 max-w-[200px] truncate" title={uploadedFile.name}>
                         {uploadedFile.name}
                     </h3>
-                    <p className="text-xs text-pw-muted mb-6 uppercase tracking-wider font-medium">
-                        {uploadedFile.type.split('/')[1] || 'FILE'} • {uploadedFile.data ? 'Preview Ready' : 'Large File'}
+                    <p className="text-xs text-pw-muted mb-2 uppercase tracking-wider font-medium">
+                        {uploadedFile.type.split('/')[1] || 'FILE'} • 
+                        {uploadedFile.originalSize && (
+                           <span className="line-through mr-1 opacity-70">{(uploadedFile.originalSize / 1024 / 1024).toFixed(1)}MB</span>
+                        )}
+                        {(uploadedFile.file!.size / 1024 / 1024).toFixed(1)}MB
                     </p>
+                    {uploadedFile.originalSize && (
+                       <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium mb-4 flex items-center gap-1">
+                          <Minimize2 size={10} /> Compressed
+                       </span>
+                    )}
+                    
                     <button 
                         onClick={handleClear}
-                        className="px-6 py-2 bg-white border border-red-200 text-red-500 rounded-md text-sm font-medium hover:bg-red-50 hover:border-red-300 transition-all shadow-sm flex items-center gap-2 group"
+                        className="px-6 py-2 bg-white border border-red-200 text-red-500 rounded-md text-sm font-medium hover:bg-red-50 hover:border-red-300 transition-all shadow-sm flex items-center gap-2 group mt-2"
                     >
                         <Trash2 size={16} className="group-hover:text-red-600" /> Remove File
                     </button>
@@ -501,7 +561,7 @@ Guideline: ${i.guidelineRef}
                 />
             )}
             
-            {!uploadedFile && (
+            {!uploadedFile && !isCompressing && (
               <div className="absolute bottom-4 right-4 flex gap-2">
                  <button 
                    onClick={handleClear}
@@ -530,7 +590,7 @@ Guideline: ${i.guidelineRef}
                  onChange={handleFileUpload} 
              />
              
-             {!content && !uploadedFile && (
+             {!content && !uploadedFile && !isCompressing && (
                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                      <div className="text-center opacity-40 pointer-events-auto cursor-pointer" onClick={() => fileInputRef.current?.click()}>
                          <Upload size={48} className="mx-auto mb-2" />
@@ -544,7 +604,7 @@ Guideline: ${i.guidelineRef}
           <div className="p-4 border-t border-pw-border bg-pw-bg/30">
             <button 
               onClick={handleAnalyze}
-              disabled={(!content.trim() && !uploadedFile) || isAnalyzing}
+              disabled={(!content.trim() && !uploadedFile) || isAnalyzing || isCompressing}
               className="w-full py-2.5 bg-pw-blue text-white rounded-md font-medium hover:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
             >
               {isAnalyzing ? (
