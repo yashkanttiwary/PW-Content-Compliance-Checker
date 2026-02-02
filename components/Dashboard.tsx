@@ -110,12 +110,12 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
       
       setResult(data);
       
-      // If we got clean content back (or extracted text was used to generate it), update the view
-      if (uploadedFile) {
-        // Use extracted text as the "Analyzed Content" base
-        setAnalyzedContent(data.cleanContent || "(No text detected in document)");
+      // Use sourceContent (extracted/original text) as the base for highlighting issues.
+      // This ensures we show the original text with issues highlighted, rather than the text with fixes already applied.
+      if (data.sourceContent) {
+          setAnalyzedContent(data.sourceContent);
       } else {
-         setAnalyzedContent(data.cleanContent || content);
+          setAnalyzedContent(content);
       }
 
       // Auto-switch to analysis view on mobile
@@ -150,7 +150,8 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
 
   const handleRestoreHistory = (item: HistoryItem) => {
     setContent(item.originalContent);
-    setAnalyzedContent(item.data.cleanContent || item.originalContent); // Restore the text view
+    // Restore the source text (with errors) so user can see issues, not the clean text
+    setAnalyzedContent(item.data.sourceContent || item.originalContent);
     setResult(item.data);
     setContentType(item.contentType);
     setActivePanel(null);

@@ -38,8 +38,9 @@ export class GeminiService {
   /**
    * Uploads a file to Google GenAI Files API using standard fetch to avoid browser memory issues.
    * This uses the Resumable Upload protocol.
+   * Returns both the URI (for generation) and the Name (for deletion).
    */
-  private async uploadFileToGemini(file: File, onStatusUpdate?: (status: string) => void): Promise<string> {
+  private async uploadFileToGemini(file: File, onStatusUpdate?: (status: string) => void): Promise<{ uri: string; name: string }> {
     if (onStatusUpdate) onStatusUpdate("Initializing secure upload...");
 
     const API_BASE = "https://generativelanguage.googleapis.com/upload/v1beta/files";
@@ -82,10 +83,11 @@ export class GeminiService {
 
     const uploadResult = await uploadResponse.json();
     const fileUri = uploadResult.file.uri;
-    const fileName = uploadResult.file.name; // This is the resource ID name
+    const fileName = uploadResult.file.name; // This is the resource ID (files/xxxx)
 
     // 3. Wait for Active State
-    return this.waitForFileActive(fileName, fileUri, onStatusUpdate);
+    const activeUri = await this.waitForFileActive(fileName, fileUri, onStatusUpdate);
+    return { uri: activeUri, name: fileName };
   }
 
   private async waitForFileActive(resourceName: string, fileUri: string, onStatusUpdate?: (status: string) => void): Promise<string> {
@@ -111,53 +113,77 @@ export class GeminiService {
       throw new Error("File processing timed out");
   }
 
+  /**
+   * Deletes a file from Google GenAI Files API to clean up storage.
+   */
+  private async deleteFile(resourceName: string): Promise<void> {
+    try {
+        const deleteUrl = `https://generativelanguage.googleapis.com/v1beta/${resourceName}?key=${this.apiKey}`;
+        await fetch(deleteUrl, { method: 'DELETE' });
+        console.log(`Cleaned up file: ${resourceName}`);
+    } catch (e) {
+        console.warn(`Failed to cleanup file ${resourceName}`, e);
+    }
+  }
+
   async analyzeContent(
     content: string, 
     contentType: string,
     onStatusUpdate?: (status: string) => void,
     onPartialResult?: (result: AnalysisResult) => void,
-    fileData?: { mimeType: string; data: string; fileObject?: File } // Modified signature
+    fileData?: { mimeType: string; data: string; fileObject?: File }
   ): Promise<AnalysisResult> {
     if (!this.ai) throw new Error("API Key not configured");
 
     const analysisTimestamp = Date.now();
+    let uploadedFileResourceName: string | null = null;
 
-    // Strategy Selection
-    if (fileData) {
-        // If we have a raw File object, we use the efficient Files API
-        if (fileData.fileObject) {
-            try {
-                const fileUri = await this.uploadFileToGemini(fileData.fileObject, onStatusUpdate);
-                return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
-                    mimeType: fileData.mimeType,
-                    fileUri: fileUri 
-                });
-            } catch (e) {
-                console.error("File API Upload Failed", e);
-                // Fallback to base64 if it exists and is small enough, otherwise throw
-                if (fileData.data) {
-                    return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+    try {
+        // Strategy Selection
+        if (fileData) {
+            // If we have a raw File object, we use the efficient Files API
+            if (fileData.fileObject) {
+                try {
+                    const { uri, name } = await this.uploadFileToGemini(fileData.fileObject, onStatusUpdate);
+                    uploadedFileResourceName = name; // Store for cleanup
+                    
+                    return await this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
                         mimeType: fileData.mimeType,
-                        data: fileData.data
+                        fileUri: uri 
                     });
+                } catch (e) {
+                    console.error("File API Upload Failed", e);
+                    // Fallback to base64 if it exists and is small enough, otherwise throw
+                    if (fileData.data) {
+                        return await this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+                            mimeType: fileData.mimeType,
+                            data: fileData.data
+                        });
+                    }
+                    throw e;
                 }
-                throw e;
+            } 
+            // Legacy Base64 path
+            else if (fileData.data) {
+                return await this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+                    mimeType: fileData.mimeType,
+                    data: fileData.data
+                });
             }
-        } 
-        // Legacy Base64 path
-        else if (fileData.data) {
-            return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
-                mimeType: fileData.mimeType,
-                data: fileData.data
-            });
         }
-    }
 
-    // Text-only strategy
-    if (content.length > this.CHUNK_SIZE) {
-        return this.analyzeInParallel(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
-    } else {
-        return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
+        // Text-only strategy
+        if (content.length > this.CHUNK_SIZE) {
+            return await this.analyzeInParallel(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
+        } else {
+            return await this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult);
+        }
+    } finally {
+        // Cleanup: Delete uploaded file if it exists, regardless of success/failure
+        if (uploadedFileResourceName) {
+            if (onStatusUpdate) onStatusUpdate("Cleaning up...");
+            await this.deleteFile(uploadedFileResourceName);
+        }
     }
   }
 
@@ -203,6 +229,7 @@ export class GeminiService {
                     issues: this.sortIssues(allIssues),
                     summary: currentSummary,
                     cleanContent: currentClean,
+                    sourceContent: content,
                     timestamp: new Date(timestamp).toISOString()
                 });
             }
@@ -220,6 +247,7 @@ export class GeminiService {
         issues: this.sortIssues(allIssues),
         summary,
         cleanContent,
+        sourceContent: content,
         timestamp: new Date(timestamp).toISOString()
     };
   }
@@ -521,6 +549,7 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
         issues,
         summary: this.calculateSummary(issues),
         cleanContent: this.generateCleanContent(content, issues),
+        sourceContent: content,
         timestamp: new Date(timestamp).toISOString()
       };
   }

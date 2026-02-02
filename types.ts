@@ -46,6 +46,7 @@ export interface AnalysisResult {
   };
   timestamp: string;
   cleanContent?: string; // AI generated clean version
+  sourceContent?: string; // The content used for analysis (extracted text or original)
 }
 
 export interface HistoryItem {
