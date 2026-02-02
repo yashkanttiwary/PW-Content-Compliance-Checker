@@ -6,15 +6,18 @@ import { AnalysisResult, Issue, Severity } from "../types";
 
 export class GeminiService {
   private ai: GoogleGenAI | null = null;
-  private readonly CHUNK_SIZE = 100000; // Increased to 100k chars for fewer requests (Flash context is large)
+  private apiKey: string = '';
+  private readonly CHUNK_SIZE = 100000;
 
   constructor(apiKey: string) {
     if (apiKey) {
+      this.apiKey = apiKey;
       this.ai = new GoogleGenAI({ apiKey });
     }
   }
 
   setApiKey(apiKey: string) {
+    this.apiKey = apiKey;
     this.ai = new GoogleGenAI({ apiKey });
   }
 
@@ -32,21 +35,122 @@ export class GeminiService {
     }
   }
 
+  /**
+   * Uploads a file to Google GenAI Files API using standard fetch to avoid browser memory issues.
+   * This uses the Resumable Upload protocol.
+   */
+  private async uploadFileToGemini(file: File, onStatusUpdate?: (status: string) => void): Promise<string> {
+    if (onStatusUpdate) onStatusUpdate("Initializing secure upload...");
+
+    const API_BASE = "https://generativelanguage.googleapis.com/upload/v1beta/files";
+    const uploadUrlQuery = `?key=${this.apiKey}`;
+
+    // 1. Initiate Resumable Upload
+    const startHeaders = {
+        'X-Goog-Upload-Protocol': 'resumable',
+        'X-Goog-Upload-Command': 'start',
+        'X-Goog-Upload-Header-Content-Length': file.size.toString(),
+        'X-Goog-Upload-Header-Content-Type': file.type,
+        'Content-Type': 'application/json',
+    };
+
+    const startResponse = await fetch(`${API_BASE}${uploadUrlQuery}`, {
+        method: 'POST',
+        headers: startHeaders,
+        body: JSON.stringify({ file: { display_name: file.name } })
+    });
+
+    if (!startResponse.ok) throw new Error(`Upload initiation failed: ${startResponse.statusText}`);
+
+    const uploadUrl = startResponse.headers.get('x-goog-upload-url');
+    if (!uploadUrl) throw new Error("Failed to get upload URL");
+
+    // 2. Perform Upload (fetch streams the body, preventing memory crash)
+    if (onStatusUpdate) onStatusUpdate("Uploading file to Gemini...");
+    
+    const uploadResponse = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Length': file.size.toString(),
+            'X-Goog-Upload-Offset': '0',
+            'X-Goog-Upload-Command': 'upload, finalize'
+        },
+        body: file 
+    });
+
+    if (!uploadResponse.ok) throw new Error(`File upload failed: ${uploadResponse.statusText}`);
+
+    const uploadResult = await uploadResponse.json();
+    const fileUri = uploadResult.file.uri;
+    const fileName = uploadResult.file.name; // This is the resource ID name
+
+    // 3. Wait for Active State
+    return this.waitForFileActive(fileName, fileUri, onStatusUpdate);
+  }
+
+  private async waitForFileActive(resourceName: string, fileUri: string, onStatusUpdate?: (status: string) => void): Promise<string> {
+      if (onStatusUpdate) onStatusUpdate("Processing file...");
+      
+      const checkUrl = `https://generativelanguage.googleapis.com/v1beta/${resourceName}?key=${this.apiKey}`;
+      
+      let attempts = 0;
+      while (attempts < 30) { // Timeout after ~60s
+          await new Promise(r => setTimeout(r, 2000));
+          const res = await fetch(checkUrl);
+          const data = await res.json();
+          
+          if (data.state === 'ACTIVE') {
+              return fileUri;
+          }
+          if (data.state === 'FAILED') {
+              throw new Error("File processing failed on Gemini servers");
+          }
+          if (onStatusUpdate) onStatusUpdate(`Processing file... (${attempts * 2}s)`);
+          attempts++;
+      }
+      throw new Error("File processing timed out");
+  }
+
   async analyzeContent(
     content: string, 
     contentType: string,
     onStatusUpdate?: (status: string) => void,
     onPartialResult?: (result: AnalysisResult) => void,
-    fileData?: { mimeType: string; data: string } // NEW: Support for multimodal input
+    fileData?: { mimeType: string; data: string; fileObject?: File } // Modified signature
   ): Promise<AnalysisResult> {
     if (!this.ai) throw new Error("API Key not configured");
 
     const analysisTimestamp = Date.now();
 
-    // Decision: If file data is present, we CANNOT chunk easily. 
-    // We strictly use the streaming strategy with the file as a part.
+    // Strategy Selection
     if (fileData) {
-        return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, fileData);
+        // If we have a raw File object, we use the efficient Files API
+        if (fileData.fileObject) {
+            try {
+                const fileUri = await this.uploadFileToGemini(fileData.fileObject, onStatusUpdate);
+                return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+                    mimeType: fileData.mimeType,
+                    fileUri: fileUri 
+                });
+            } catch (e) {
+                console.error("File API Upload Failed", e);
+                // Fallback to base64 if it exists and is small enough, otherwise throw
+                if (fileData.data) {
+                    return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+                        mimeType: fileData.mimeType,
+                        data: fileData.data
+                    });
+                }
+                throw e;
+            }
+        } 
+        // Legacy Base64 path
+        else if (fileData.data) {
+            return this.analyzeStream(content, contentType, analysisTimestamp, onStatusUpdate, onPartialResult, {
+                mimeType: fileData.mimeType,
+                data: fileData.data
+            });
+        }
     }
 
     // Text-only strategy
@@ -57,7 +161,6 @@ export class GeminiService {
     }
   }
 
-  // --- PARALLEL PROCESSING STRATEGY (Text Only) ---
   private async analyzeInParallel(
     content: string,
     contentType: string,
@@ -73,32 +176,26 @@ export class GeminiService {
 
     const promises = chunks.map(async (chunk, index) => {
         try {
-            // Process chunk independently
             const chunkResult = await this.analyzeSingleChunk(chunk.text, contentType);
-            
-            // Adjust indices to match original full content
             const adjustedIssues = chunkResult.issues.map(issue => {
                 const globalStart = (issue.startIndex || 0) + chunk.offset;
                 const globalEnd = (issue.endIndex || 0) + chunk.offset;
                 return {
                     ...issue,
-                    id: `issue-${timestamp}-${index}-${issue.id.split('-').pop()}`, // Ensure unique ID
+                    id: `issue-${timestamp}-${index}-${issue.id.split('-').pop()}`,
                     startIndex: globalStart,
                     endIndex: globalEnd,
-                    line: this.calculateLineNumber(content, globalStart) // Recalculate line based on full text
+                    line: this.calculateLineNumber(content, globalStart)
                 };
             });
 
-            // Add to global list (Thread-safe in JS event loop)
             allIssues.push(...adjustedIssues);
             completedChunks++;
 
-            // Emit progress
             if (onStatusUpdate) {
                 onStatusUpdate(`Analyzed part ${completedChunks}/${chunks.length}...`);
             }
 
-            // Emit partial results
             if (onPartialResult) {
                 const currentSummary = this.calculateSummary(allIssues);
                 const currentClean = this.generateCleanContent(content, allIssues);
@@ -109,10 +206,8 @@ export class GeminiService {
                     timestamp: new Date(timestamp).toISOString()
                 });
             }
-
         } catch (e) {
             console.error(`Chunk ${index} failed`, e);
-            // We continue even if one chunk fails, to return partial results
         }
     });
 
@@ -129,12 +224,10 @@ export class GeminiService {
     };
   }
 
-  // Helper: Analyze a single chunk (Non-streaming for simplicity in parallel mode)
   private async analyzeSingleChunk(chunkText: string, contentType: string): Promise<{ issues: Issue[] }> {
      if (!this.ai) throw new Error("No API Key");
      const prompt = `CONTENT TYPE: ${contentType}\n\nCONTENT SEGMENT:\n${chunkText}`;
      
-     // Retry logic specific to chunk
      let attempts = 0;
      while (attempts < 3) {
          try {
@@ -145,8 +238,8 @@ export class GeminiService {
                  config: {
                      systemInstruction: SYSTEM_PROMPT,
                      responseMimeType: "application/json",
-                     temperature: 1, // Increased to 1 as requested
-                     thinkingConfig: { thinkingBudget: 8192 } // Increased to 8k for deep analysis
+                     temperature: 1,
+                     thinkingConfig: { thinkingBudget: 8192 }
                  }
              });
              
@@ -156,12 +249,10 @@ export class GeminiService {
              try {
                 parsed = JSON.parse(text);
              } catch (e) {
-                // Fallback for markdown code blocks if strictly necessary
                 const jsonClean = text.replace(/```json\n?|\n?```/g, '').trim();
                 parsed = JSON.parse(jsonClean);
              }
              
-             // Process raw issues relative to CHUNK text
              const processed = this.processRawIssues(parsed.issues || [], chunkText, Date.now());
              return { issues: processed.issues };
 
@@ -181,14 +272,10 @@ export class GeminiService {
   private splitContent(content: string): { text: string; offset: number }[] {
     const chunks = [];
     let currentOffset = 0;
-    
-    // Split by double newline to preserve paragraphs
     const paragraphs = content.split(/(\n\n+)/);
-    
     let currentChunk = '';
 
     for (const part of paragraphs) {
-        // If adding this part exceeds size AND we have content, push current chunk
         if ((currentChunk.length + part.length) > this.CHUNK_SIZE && currentChunk.length > 0) {
             chunks.push({ text: currentChunk, offset: currentOffset });
             currentOffset += currentChunk.length;
@@ -196,28 +283,23 @@ export class GeminiService {
         }
         currentChunk += part;
     }
-    // Push remaining
     if (currentChunk.length > 0) {
         chunks.push({ text: currentChunk, offset: currentOffset });
     }
-    
     return chunks;
   }
 
-  // --- STREAMING STRATEGY (Updated for Robust Partial Parsing & Multimodal) ---
   private async analyzeStream(
     content: string, 
     contentType: string,
     timestamp: number,
     onStatusUpdate?: (status: string) => void,
     onPartialResult?: (result: AnalysisResult) => void,
-    fileData?: { mimeType: string; data: string }
+    fileSource?: { mimeType: string; data?: string; fileUri?: string } // Updated signature
   ): Promise<AnalysisResult> {
     
-    // Construct the parts. If fileData exists, add it.
-    // If it's a file, we ask the model to also output the extracted text so we can highlight it.
     let instructionAddition = "";
-    if (fileData) {
+    if (fileSource) {
         instructionAddition = `
         
 IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
@@ -233,13 +315,24 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
     const promptText = `CONTENT TYPE: ${contentType}\n\nCONTENT:\n${content || "(See attached file)"}${instructionAddition}`;
     
     const parts: any[] = [{ text: promptText }];
-    if (fileData) {
-        parts.unshift({
-            inlineData: {
-                mimeType: fileData.mimeType,
-                data: fileData.data
-            }
-        });
+    
+    // Support both Inline (legacy/small) and URI (large/Files API)
+    if (fileSource) {
+        if (fileSource.fileUri) {
+             parts.unshift({
+                fileData: {
+                    mimeType: fileSource.mimeType,
+                    fileUri: fileSource.fileUri
+                }
+            });
+        } else if (fileSource.data) {
+            parts.unshift({
+                inlineData: {
+                    mimeType: fileSource.mimeType,
+                    data: fileSource.data
+                }
+            });
+        }
     }
 
     let attempts = 0;
@@ -253,12 +346,12 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
 
         const streamResult = await this.ai!.models.generateContentStream({
           model: GEMINI_MODEL,
-          contents: { parts }, // Use 'parts' structure for multimodal
+          contents: { parts },
           config: {
             systemInstruction: SYSTEM_PROMPT,
             responseMimeType: "application/json",
-            temperature: 1, // Increased to 1 as requested
-            thinkingConfig: { thinkingBudget: 8192 } // Increased to 8k for deep analysis
+            temperature: 1,
+            thinkingConfig: { thinkingBudget: 8192 }
           }
         });
 
@@ -272,19 +365,15 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
             const chunkText = chunk.text || '';
             fullTextResponse += chunkText;
 
-            // Real-time Partial Parsing
-            // We only trigger an update if we find *more* issues than before.
             const partialRawIssues = this.extractIssuesFromStream(fullTextResponse);
             
             if (partialRawIssues.length > lastEmittedIssueCount) {
                  lastEmittedIssueCount = partialRawIssues.length;
-                 // Note: For files, 'content' might be empty initially. We might need extracted text.
-                 // For partial results during file analysis, highlighting might be off until we get full text.
                  const partialResult = this.processRawIssues(partialRawIssues, content, timestamp);
                  if (onPartialResult) onPartialResult(partialResult);
             }
         }
-        break; // Success
+        break;
       } catch (e: any) {
          console.error("Stream Error", e);
          const isRateLimit = e.message?.includes('429') || e.status === 429 || e.status === 503;
@@ -299,23 +388,19 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
 
     if (!fullTextResponse) throw new Error("No response from AI");
 
-    // Final Parse to ensure completeness
     let rawIssues: any[] = [];
     let extractedText = '';
 
     try {
-        // Try standard parse first
         const parsed = JSON.parse(fullTextResponse);
         rawIssues = parsed.issues || [];
         if (parsed.extractedText) {
             extractedText = parsed.extractedText;
         }
     } catch (e) {
-        // Fallback to our robust parser
         rawIssues = this.extractIssuesFromStream(fullTextResponse);
     }
 
-    // If we have extracted text from the file (PDF/Image), we use THAT as the content source for highlighting
     const contentToUse = extractedText || content;
 
     return this.processRawIssues(rawIssues, contentToUse, timestamp);
@@ -323,10 +408,6 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
 
   // --- SHARED HELPERS ---
 
-  /**
-   * Robustly extracts JSON objects from a potentially incomplete stream.
-   * Looks for the "issues": [ pattern and extracts complete objects inside it.
-   */
   private extractIssuesFromStream(text: string): any[] {
     const marker = '"issues"';
     const markerIndex = text.indexOf(marker);
@@ -341,11 +422,8 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
     let inString = false;
     let isEscaped = false;
 
-    // Start scanning after the opening [
     for (let i = arrayStartIndex + 1; i < text.length; i++) {
       const char = text[i];
-      
-      // Handle Escape Sequences
       if (isEscaped) {
         isEscaped = false;
         continue;
@@ -354,8 +432,6 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
         isEscaped = true;
         continue;
       }
-
-      // Handle Strings (ignore braces inside strings)
       if (char === '"') {
         inString = !inString;
         continue;
@@ -363,31 +439,25 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
 
       if (!inString) {
         if (char === '{') {
-          if (braceCount === 0) startIndex = i; // Found start of a potential issue object
+          if (braceCount === 0) startIndex = i;
           braceCount++;
         } else if (char === '}') {
           braceCount--;
           if (braceCount === 0 && startIndex !== -1) {
-            // Found end of an issue object
             const jsonStr = text.substring(startIndex, i + 1);
             try {
               const obj = JSON.parse(jsonStr);
-              // Simple validation to ensure it's not junk
               if (obj && typeof obj === 'object') {
                   objects.push(obj);
               }
-            } catch (e) {
-              // Ignore incomplete or malformed objects in the stream buffer
-            }
+            } catch (e) {}
             startIndex = -1;
           }
         } else if (char === ']' && braceCount === 0) {
-            // End of issues array
             break;
         }
       }
     }
-    
     return objects;
   }
 
@@ -422,7 +492,6 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
             
             const { index: found, length } = match;
             let collision = false;
-            // Check for collision with previously found issues
             for (let i = found; i < found + length; i++) {
                 if (usedIndices.has(i)) { collision = true; break; }
             }
@@ -432,7 +501,6 @@ IMPORTANT INSTRUCTIONS FOR FILE ANALYSIS:
                 matchLen = length;
                 break;
             }
-            // If collision, keep searching forward
             pos = found + 1;
         }
 

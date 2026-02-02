@@ -14,7 +14,8 @@ export const GUIDELINE_CATEGORIES = [
   "Coaching Guidelines 2024",
   "Third-Party IP",
   "Controversial Content",
-  "Industry & Positioning"
+  "Industry & Positioning",
+  "Spelling & Grammar"
 ];
 
 export const GUIDELINE_DETAILS = [
@@ -77,6 +78,12 @@ export const GUIDELINE_DETAILS = [
     severity: Severity.WARNING,
     description: "No competitor names, logos, or commentary on market rumors/news.",
     examples: "Competitor names, Copyrighted music, Market rumors, Allegations, Political comments."
+  },
+  {
+    title: "11. Spelling & Grammar",
+    severity: Severity.SUGGESTION,
+    description: "Ensure content is free from spelling mistakes and grammatical errors in any language (English, Hindi, Hinglish, etc.).",
+    examples: "Typos, incorrect punctuation, grammatical inconsistencies."
   }
 ];
 
@@ -146,6 +153,12 @@ CRITICAL LEGAL RESTRICTIONS:
 8. TESTIMONIALS & CONSENT (Key Restriction 6, Past Results):
    - Flag student photos, names, or testimonials if they appear to lack a disclaimer about written consent.
    - Rule: Consent must be obtained *subsequent* to selection.
+
+9. SPELLING & GRAMMAR:
+   - Flag spelling mistakes and grammatical errors in ANY language (English, Hindi, Hinglish, etc.).
+   - Ensure the content maintains professional standards.
+   - Category: "Spelling & Grammar".
+   - Severity: SUGGESTION.
 
 RESPONSE RULES:
 1. Return JSON only.

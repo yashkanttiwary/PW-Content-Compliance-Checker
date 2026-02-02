@@ -23,7 +23,8 @@ interface DashboardProps {
 interface UploadedFile {
   name: string;
   type: string;
-  data: string; // base64
+  data: string | null; // data is null if file is too large for inline/preview
+  file?: File; // Store the raw file object for large uploads
 }
 
 const base64ToBlobUrl = (base64: string, mimeType: string) => {
@@ -67,7 +68,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
 
   // Memoize blob URL for file preview to avoid re-creation on render
   const filePreviewUrl = useMemo(() => {
-    if (!uploadedFile) return '';
+    if (!uploadedFile || !uploadedFile.data) return '';
     return base64ToBlobUrl(uploadedFile.data, uploadedFile.type);
   }, [uploadedFile]);
 
@@ -82,8 +83,6 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     setErrorMsg(null);           // Clear any previous errors
     setViewMode('analysis');     // Force switch to analysis view
     
-    // If file is uploaded, we don't set analyzedContent yet; we wait for extraction.
-    // If text only, we reset analyzedContent to match input.
     if (!uploadedFile) {
         setAnalyzedContent(content); 
     } else {
@@ -91,6 +90,14 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     }
     
     try {
+      // Prepare file data: prefer raw file object if available (large file path)
+      // otherwise use base64 data (small file/legacy path)
+      const filePayload = uploadedFile ? {
+          mimeType: uploadedFile.type,
+          data: uploadedFile.data || '',
+          fileObject: uploadedFile.file
+      } : undefined;
+
       const data = await geminiService.analyzeContent(
         content, 
         contentType,
@@ -98,7 +105,7 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         (partialData) => {
             setResult(partialData);
         },
-        uploadedFile ? { mimeType: uploadedFile.type, data: uploadedFile.data } : undefined
+        filePayload
       );
       
       setResult(data);
@@ -123,12 +130,12 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         issuesCount: data.summary.total,
         data: {
           ...data,
-          cleanContent: data.cleanContent // Ensure clean content is stored
+          cleanContent: data.cleanContent
         },
-        originalContent: uploadedFile ? "" : content // Don't store huge base64 in history for now
+        originalContent: uploadedFile ? "" : content
       };
 
-      const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 20); // Reduced from 50 to 20
+      const updatedHistory = [newHistoryItem, ...appState.history].slice(0, 20);
       onUpdateAppState({ ...appState, history: updatedHistory });
 
     } catch (error) {
@@ -186,7 +193,11 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
     const isPDF = file.type === 'application/pdf';
     const isText = file.type === 'text/plain' || file.name.endsWith('.md') || file.name.endsWith('.txt');
 
-    if (isText) {
+    // SAFE LIMIT: 4MB for inline preview. Anything larger uses Files API strategy.
+    const MAX_INLINE_SIZE = 4 * 1024 * 1024; 
+    const isLargeFile = file.size > MAX_INLINE_SIZE;
+
+    if (isText && !isLargeFile) {
         const reader = new FileReader();
         reader.onload = (ev) => {
           setContent(ev.target?.result as string);
@@ -194,43 +205,48 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         };
         reader.readAsText(file);
     } else if (isImage || isPDF) {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            const result = ev.target?.result as string;
-            // Extract base64 part
-            const base64Data = result.split(',')[1];
+        // Prevent browser crash: Do NOT read large files into memory (base64)
+        if (isLargeFile) {
             setUploadedFile({
                 name: file.name,
                 type: file.type,
-                data: base64Data
+                data: null, // No preview for large files
+                file: file // Store raw file for Service to handle upload
             });
-            setContent(''); // Clear text input when file is active
-        };
-        reader.readAsDataURL(file);
+            setContent('');
+        } else {
+            // Small files: read for preview
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const result = ev.target?.result as string;
+                const base64Data = result.split(',')[1];
+                setUploadedFile({
+                    name: file.name,
+                    type: file.type,
+                    data: base64Data,
+                    file: file
+                });
+                setContent('');
+            };
+            reader.readAsDataURL(file);
+        }
     } else {
         setErrorMsg("Unsupported file type. Please upload Image, PDF, or Text.");
     }
   };
 
   const handleApplyFix = (issue: Issue) => {
-    // We use a functional update for the result to ensure we are working with the latest state
-    // preventing race conditions with multiple rapid clicks.
     setResult((prevResult: any) => {
       if (!prevResult) return null;
 
-      // Find the issue in the current/prev state (it might have been updated by previous fixes)
       const currentIssue = prevResult.issues.find((i: Issue) => i.id === issue.id);
       
-      // Validation: Indices must exist
       if (!currentIssue || typeof currentIssue.startIndex !== 'number' || typeof currentIssue.endIndex !== 'number') {
         console.error("Invalid issue indices", currentIssue);
         setErrorMsg("Unable to apply fix: Issue data is invalid.");
         return prevResult;
       }
       
-      // CRITICAL VALIDATION: Content Integrity Check
-      // Verify that the text at the target range strictly matches the expected original text.
-      // This protects against index drift if the document state has desynchronized.
       const targetText = analyzedContent.slice(currentIssue.startIndex, currentIssue.endIndex);
       if (targetText !== currentIssue.originalText) {
         setErrorMsg(`Sync error: The content has changed or shifted. Expected "${currentIssue.originalText}" but found "${targetText}". Please re-analyze.`);
@@ -242,29 +258,21 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         };
       }
       
-      // Apply fix to the content
-      // Note: we are reading analyzedContent from closure, but since we validated targetText above,
-      // we know this closure's analyzedContent is consistent with the issue's indices.
       const prefix = analyzedContent.slice(0, currentIssue.startIndex);
       const suffix = analyzedContent.slice(currentIssue.endIndex);
       const newContent = prefix + currentIssue.suggestion + suffix;
       
-      // Update Content State
       setAnalyzedContent(newContent);
-      if (!uploadedFile) setContent(newContent); // Only sync back to input if it was text input
-      setErrorMsg(null); // Clear errors on success
+      if (!uploadedFile) setContent(newContent); 
+      setErrorMsg(null);
 
-      // Calculate length difference to shift subsequent issues
       const lengthDiff = currentIssue.suggestion.length - (currentIssue.endIndex - currentIssue.startIndex);
 
-      // Create updated issues list with index shifting
       const updatedIssues = prevResult.issues.map((i: Issue) => {
         if (i.id === issue.id) {
           return { ...i, status: 'fixed' };
         }
         
-        // Shift indices for issues that occur strictly AFTER the fixed issue's start index
-        // This preserves relative positions.
         if (typeof i.startIndex === 'number' && i.startIndex > currentIssue.startIndex!) {
           return {
             ...i,
@@ -275,10 +283,8 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
         return i;
       });
 
-      // Update summary counts
       const newSummary = { ...prevResult.summary };
       if (currentIssue.status !== 'fixed') { 
-        // Only decrement if not already fixed/ignored (idempotency)
         const severityKey = issue.severity.toLowerCase() as keyof typeof prevResult.summary;
         if (newSummary[severityKey] > 0) newSummary[severityKey]--;
       }
@@ -374,14 +380,6 @@ Guideline: ${i.guidelineRef}
   };
 
   const wordCount = content.trim() === '' ? 0 : content.trim().split(/\s+/).length;
-  
-  const getReadingTime = () => {
-    const wordsPerMinute = 150;
-    const minutes = wordCount / wordsPerMinute;
-    const wholeMinutes = Math.floor(minutes);
-    const seconds = Math.round((minutes - wholeMinutes) * 60);
-    return `${wholeMinutes}m ${seconds}s`;
-  };
 
   return (
     <div className="h-full flex flex-col relative">
@@ -483,7 +481,7 @@ Guideline: ${i.guidelineRef}
                         {uploadedFile.name}
                     </h3>
                     <p className="text-xs text-pw-muted mb-6 uppercase tracking-wider font-medium">
-                        {uploadedFile.type.split('/')[1] || 'FILE'}
+                        {uploadedFile.type.split('/')[1] || 'FILE'} • {uploadedFile.data ? 'Preview Ready' : 'Large File'}
                     </p>
                     <button 
                         onClick={handleClear}
@@ -523,7 +521,6 @@ Guideline: ${i.guidelineRef}
               </div>
             )}
             
-            {/* Hidden Input for upload button triggered from empty state */}
              <input 
                  type="file" 
                  ref={fileInputRef} 
@@ -532,7 +529,6 @@ Guideline: ${i.guidelineRef}
                  onChange={handleFileUpload} 
              />
              
-             {/* If no content and no file, show big upload prompt */}
              {!content && !uploadedFile && (
                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                      <div className="text-center opacity-40 pointer-events-auto cursor-pointer" onClick={() => fileInputRef.current?.click()}>
@@ -604,7 +600,6 @@ Guideline: ${i.guidelineRef}
             </div>
             
             <div className="flex items-center gap-3">
-              {/* RESTORED AND ENHANCED VISIBILITY OF LEGEND */}
               <div className="hidden md:flex gap-4 text-xs pr-4 border-r border-gray-200 mr-2">
                 <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-sm"></span> Critical</div>
                 <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-sm"></span> Warning</div>
@@ -663,7 +658,6 @@ Guideline: ${i.guidelineRef}
           </div>
           
           <div className="flex-1 p-4 overflow-hidden relative flex flex-col">
-             {/* Fix M-02: Show warning if content is dirty */}
              {isDirty && (
                <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-md flex items-center gap-2 text-sm animate-in fade-in slide-in-from-top-2">
                  <AlertTriangle size={16} className="shrink-0" />
@@ -681,29 +675,33 @@ Guideline: ${i.guidelineRef}
              <div className="flex-1 relative overflow-hidden bg-white rounded-lg border border-pw-border shadow-sm">
                 {uploadedFile && viewMode === 'original' ? (
                   <div className="w-full h-full flex items-center justify-center bg-gray-100 overflow-hidden">
-                    {uploadedFile.type === 'application/pdf' ? (
-                      <iframe 
-                        src={`${filePreviewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
-                        className="w-full h-full border-none"
-                        title="PDF Preview"
-                      >
-                         <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4 text-center">
-                            <FileText size={48} className="mb-4 text-gray-400" />
-                            <p className="font-medium mb-2">Browser PDF Preview Not Supported</p>
-                            <p className="text-xs mb-4 max-w-xs">Your browser doesn't support inline PDF viewing.</p>
-                            <a href={filePreviewUrl} download={uploadedFile.name} className="px-4 py-2 bg-pw-blue text-white rounded text-sm hover:bg-blue-700 transition-colors">
-                              Download PDF
-                            </a>
-                         </div>
-                      </iframe>
-                    ) : uploadedFile.type.startsWith('image/') ? (
-                      <img src={filePreviewUrl} alt="Original" className="max-w-full max-h-full object-contain p-4" />
+                    {/* Only show preview if data is available (small file) */}
+                    {uploadedFile.data ? (
+                        uploadedFile.type === 'application/pdf' ? (
+                        <iframe 
+                            src={`${filePreviewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
+                            className="w-full h-full border-none"
+                            title="PDF Preview"
+                        >
+                            <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4 text-center">
+                                <FileText size={48} className="mb-4 text-gray-400" />
+                                <p className="font-medium mb-2">Browser PDF Preview Not Supported</p>
+                            </div>
+                        </iframe>
+                        ) : uploadedFile.type.startsWith('image/') ? (
+                        <img src={filePreviewUrl} alt="Original" className="max-w-full max-h-full object-contain p-4" />
+                        ) : (
+                        <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4">
+                            <FileText size={48} className="mb-2" />
+                            <p>Preview not available</p>
+                        </div>
+                        )
                     ) : (
-                      <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4">
-                        <FileText size={48} className="mb-2" />
-                        <p>Preview not available</p>
-                        <a href={filePreviewUrl} download={uploadedFile.name} className="text-pw-blue underline mt-2 text-sm">Download File</a>
-                      </div>
+                         <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4">
+                            <FileText size={48} className="mb-2 opacity-30" />
+                            <p className="font-medium">File too large for inline preview</p>
+                            <p className="text-xs text-gray-400 mt-2">Analysis will still work via secure upload.</p>
+                        </div>
                     )}
                   </div>
                 ) : (
@@ -712,7 +710,7 @@ Guideline: ${i.guidelineRef}
                     issues={result?.issues || []} 
                     onIssueClick={(issue) => {
                       setActiveIssueId(issue.id);
-                      setMobileTab('issues'); // Jump to details on mobile
+                      setMobileTab('issues'); 
                     }}
                     activeIssueId={activeIssueId}
                   />
@@ -735,7 +733,7 @@ Guideline: ${i.guidelineRef}
           )}
         </div>
 
-        {/* Column 3: Issues */}
+        {/* Column 3: Issues (Unchanged mostly) */}
         <div className={`flex-1 flex-col border-l border-pw-border bg-white lg:max-w-sm min-w-[300px] ${mobileTab === 'issues' ? 'flex' : 'hidden lg:flex'}`}>
           <div className="p-4 border-b border-pw-border bg-pw-bg/30">
             <h2 className="font-semibold text-pw-text mb-3">Issues Found</h2>
@@ -778,7 +776,7 @@ Guideline: ${i.guidelineRef}
                       e.preventDefault();
                       setActiveIssueId(issue.id);
                       setMobileTab('analysis');
-                      setViewMode('analysis'); // Ensure we see text when clicking an issue
+                      setViewMode('analysis');
                     }
                   }}
                   className={`
@@ -787,8 +785,8 @@ Guideline: ${i.guidelineRef}
                   `}
                   onClick={() => {
                     setActiveIssueId(issue.id);
-                    setMobileTab('analysis'); // Jump to context on mobile
-                    setViewMode('analysis'); // Ensure we see text when clicking an issue
+                    setMobileTab('analysis'); 
+                    setViewMode('analysis');
                   }}
                 >
                   <div className={`px-3 py-2 border-b flex justify-between items-center ${issue.status === 'ignored' ? 'opacity-50' : ''}`}>
@@ -851,7 +849,7 @@ Guideline: ${i.guidelineRef}
           </div>
         </div>
 
-        {/* Sidebar Panels (History/Help) - Unchanged layout logic */}
+        {/* Sidebar Panels (History/Help) */}
         {activePanel === 'history' && (
           <div className="absolute inset-0 z-30 flex justify-end">
             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
@@ -917,7 +915,7 @@ Guideline: ${i.guidelineRef}
           </div>
         )}
 
-        {/* Help Panel - Unchanged */}
+        {/* Help Panel */}
         {activePanel === 'help' && (
           <div className="absolute inset-0 z-30 flex justify-end">
             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
@@ -954,7 +952,7 @@ Guideline: ${i.guidelineRef}
           </div>
         )}
 
-        {/* Settings Modal - Unchanged */}
+        {/* Settings Modal */}
         {activePanel === 'settings' && (
           <div className="absolute inset-0 z-40 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setActivePanel(null)} />
