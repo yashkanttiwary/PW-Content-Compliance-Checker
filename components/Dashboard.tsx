@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Play, FileText, Upload, Copy, Download, 
   ChevronDown, X, Check, Info,
@@ -67,15 +67,31 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
   // New UI State
   const [activePanel, setActivePanel] = useState<'history' | 'settings' | 'help' | null>(null);
   const [mobileTab, setMobileTab] = useState<'input' | 'analysis' | 'issues'>('input');
+  
+  // File Preview URL State
+  const [filePreviewUrl, setFilePreviewUrl] = useState<string>('');
 
   // Check if content matches analyzed content (for Sync Warning M-02)
   // Only applicable if NOT using a binary file
   const isDirty = result && !uploadedFile && content !== analyzedContent;
 
-  // Memoize blob URL for file preview to avoid re-creation on render
-  const filePreviewUrl = useMemo(() => {
-    if (!uploadedFile || !uploadedFile.data) return '';
-    return base64ToBlobUrl(uploadedFile.data, uploadedFile.type);
+  // Manage file preview URL lifecycle
+  useEffect(() => {
+    let url = '';
+    if (uploadedFile) {
+        if (uploadedFile.file) {
+            // Prefer raw file object (works for large files/compressed files)
+            url = URL.createObjectURL(uploadedFile.file);
+        } else if (uploadedFile.data) {
+            // Fallback to base64 data
+            url = base64ToBlobUrl(uploadedFile.data, uploadedFile.type);
+        }
+    }
+    setFilePreviewUrl(url);
+
+    return () => {
+        if (url) URL.revokeObjectURL(url);
+    };
   }, [uploadedFile]);
 
   const handleAnalyze = async () => {
@@ -254,8 +270,8 @@ const Dashboard: React.FC<DashboardProps> = ({ appState, onLogout, onUpdateAppSt
             setUploadedFile({
                 name: fileToProcess.name,
                 type: fileToProcess.type,
-                data: null, // No preview for large files
-                file: fileToProcess, // Store raw file for Service to handle upload
+                data: null, // No preview data for large files (will use File object)
+                file: fileToProcess, // Store raw file for Service to handle upload and preview
                 originalSize: wasCompressed ? file.size : undefined
             });
             setContent('');
@@ -735,9 +751,15 @@ Guideline: ${i.guidelineRef}
              
              <div className="flex-1 relative overflow-hidden bg-white rounded-lg border border-pw-border shadow-sm">
                 {uploadedFile && viewMode === 'original' ? (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-100 overflow-hidden">
-                    {/* Only show preview if data is available (small file) */}
-                    {uploadedFile.data ? (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-100 overflow-hidden relative">
+                    {uploadedFile.originalSize && (
+                        <div className="absolute top-4 right-4 z-10 bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-md shadow-sm border border-green-200 flex items-center gap-1.5 opacity-90 hover:opacity-100 transition-opacity">
+                            <Minimize2 size={12} />
+                            <span>Compressed Preview</span>
+                        </div>
+                    )}
+                    
+                    {filePreviewUrl ? (
                         uploadedFile.type === 'application/pdf' ? (
                         <iframe 
                             src={`${filePreviewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
@@ -754,7 +776,7 @@ Guideline: ${i.guidelineRef}
                         ) : (
                         <div className="flex flex-col items-center justify-center h-full text-pw-muted p-4">
                             <FileText size={48} className="mb-2" />
-                            <p>Preview not available</p>
+                            <p>Preview not available for this file type</p>
                         </div>
                         )
                     ) : (
